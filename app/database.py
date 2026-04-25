@@ -1,7 +1,9 @@
 import aiosqlite
 import os
 
-DB_PATH = "anime_monitor.db"
+# O banco de dados fica na raiz do projeto
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(BASE_DIR, "anime_monitor.db")
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:

@@ -1,3 +1,4 @@
 #!/bin/bash
 source .venv/bin/activate
-python3 subsplease_downloader.py
+export PYTHONPATH=$PYTHONPATH:$(pwd)/app
+python3 app/subsplease_downloader.py

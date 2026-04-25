@@ -5,7 +5,7 @@ from textual.widgets import Header, Footer, DataTable, Input, RichLog, Label, Bu
 from textual.containers import Vertical, Horizontal, Container
 from textual import work
 from database import init_db, get_monitored_animes, add_anime, remove_anime
-from downloader import check_for_updates, search_anime_history, process_releases
+from downloader import check_for_updates, search_anime_history, process_releases, organize_downloads, force_download_subs
 
 class SubsPleaseApp(App):
     CSS = """
@@ -27,6 +27,7 @@ class SubsPleaseApp(App):
         height: 30%;
         border: solid #333;
         background: #000;
+        scrollbar-gutter: stable;
     }
 
     .input_container {
@@ -55,6 +56,8 @@ class SubsPleaseApp(App):
         ("q", "quit", "Sair"),
         ("r", "refresh", "Verificar Agora"),
         ("d", "delete_selected", "Remover Selecionado"),
+        ("o", "organize", "Organizar Pasta"),
+        ("l", "download_subs", "Buscar Legendas"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -68,7 +71,8 @@ class SubsPleaseApp(App):
                 yield Button("Adicionar", variant="success", id="add_btn")
             
             yield Label("Logs de Atividade")
-            yield RichLog(highlight=True, markup=True)
+            # Ativando auto_scroll para que mostre sempre o mais novo
+            yield RichLog(highlight=True, markup=True, auto_scroll=True)
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -98,10 +102,24 @@ class SubsPleaseApp(App):
         timestamp = datetime.now().strftime("%H:%M:%S")
         log.write(f"[{timestamp}] [{color}]{message}[/]")
 
+    async def run_organization_logic(self):
+        """Lógica interna de organização (não-worker)"""
+        self.log_message("Organizando arquivos finalizados...", "blue")
+        try:
+            moved = await organize_downloads()
+            if moved:
+                for f in moved:
+                    self.log_message(f"ORGANIZADO: {f}", "cyan")
+            else:
+                self.log_message("Nada pendente para organizar.", "yellow")
+        except Exception as e:
+            self.log_message(f"Erro ao organizar: {e}", "red")
+
     @work(exclusive=True)
     async def action_refresh(self) -> None:
         self.log_message("Verificando novas releases...", "blue")
         try:
+            # 1. Verifica novos episódios
             triggered = await check_for_updates()
             if triggered:
                 for item in triggered:
@@ -109,8 +127,31 @@ class SubsPleaseApp(App):
                 await self.refresh_table()
             else:
                 self.log_message("Nenhuma release nova encontrada.", "yellow")
+            
+            # 2. Organiza a pasta
+            await self.run_organization_logic()
+            
         except Exception as e:
             self.log_message(f"Erro na verificação: {e}", "red")
+
+    @work(exclusive=True)
+    async def action_organize(self) -> None:
+        await self.run_organization_logic()
+
+    @work(exclusive=True)
+    async def action_download_subs(self) -> None:
+        self.log_message("Buscando legendas para os episódios atuais...", "blue")
+        try:
+            downloaded = await force_download_subs()
+            if downloaded:
+                for item in downloaded:
+                    self.log_message(f"LEGENDA BAIXADA: {item}", "green")
+                # Tenta organizar logo em seguida
+                await self.run_organization_logic()
+            else:
+                self.log_message("Nenhuma legenda nova encontrada.", "yellow")
+        except Exception as e:
+            self.log_message(f"Erro ao buscar legendas: {e}", "red")
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "add_btn":
@@ -142,7 +183,7 @@ class SubsPleaseApp(App):
                 input_widget.value = ""
                 await self.refresh_table()
                 
-                # BUSCA PROFUNDA: Pesquisa o histórico desse anime específico
+                # BUSCA PROFUNDA
                 self.log_message(f"Buscando histórico completo de '{name}'...", "blue")
                 history = await search_anime_history(name)
                 if history:
