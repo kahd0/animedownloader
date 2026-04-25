@@ -14,7 +14,7 @@ ANIMETOSHO_API = "https://feed.animetosho.org/json"
 
 # Caminhos Base
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SOURCE_DIR = "/home/kahd0/Downloads/Torrents"
+SOURCE_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "Torrents")
 FINAL_DIR = os.path.join(BASE_DIR, "episodes")
 SUBS_TEMP_DIR = os.path.join(BASE_DIR, "legendas")
 
@@ -65,7 +65,9 @@ async def download_subtitle(show_name, ep_num):
                             if a.get('type') == 'subtitle' and a['id'] not in seen_ids:
                                 all_subs.append(a)
                                 seen_ids.add(a['id'])
-            except: continue
+            except Exception as e:
+                print(f"Erro busca legenda: {e}")
+                continue
 
     if not all_subs: return None
 
@@ -84,6 +86,7 @@ async def download_subtitle(show_name, ep_num):
         dl_url = f"https://storage.animetosho.org/attach/{best_sub['id']:08x}/file.xz"
         async with httpx.AsyncClient() as client:
             resp = await client.get(dl_url, timeout=15)
+            resp.raise_for_status()
             data = lzma.decompress(resp.content)
             
         ext = best_sub['info'].get('codec', 'ass').lower()
@@ -93,7 +96,9 @@ async def download_subtitle(show_name, ep_num):
         filename = os.path.join(SUBS_TEMP_DIR, f"{safe_pattern}_ep{ep_str}.{ext}")
         with open(filename, 'wb') as f: f.write(data)
         return filename
-    except: return None
+    except Exception as e:
+        print(f"Erro download/salvar legenda: {e}")
+        return None
 
 def trigger_magnet(magnet_link):
     try:
@@ -101,7 +106,9 @@ def trigger_magnet(magnet_link):
         elif platform.system() == "Darwin": subprocess.run(["open", magnet_link])
         else: subprocess.run(["xdg-open", magnet_link])
         return True
-    except: return webbrowser.open(magnet_link)
+    except Exception as e:
+        print(f"Erro ao abrir magnet: {e}")
+        return webbrowser.open(magnet_link)
 
 async def organize_downloads():
     """Move vídeos e busca legendas correspondentes"""
@@ -173,7 +180,8 @@ async def process_releases(releases_list, monitored_list=None):
     for info in normalized:
         show_name = info.get('show', '')
         try: episode_num = int(info.get('episode', 0))
-        except: continue
+        except (ValueError, TypeError):
+            continue
 
         for anime_id, pattern, last_ep, res in monitored_list:
             if pattern.lower() in show_name.lower() and episode_num > last_ep:
