@@ -1,9 +1,6 @@
 import aiosqlite
-import os
 from datetime import datetime
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, "anime_monitor.db")
+from .config import DB_PATH
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:

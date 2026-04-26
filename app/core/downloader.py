@@ -4,31 +4,23 @@ import webbrowser
 import platform
 import subprocess
 import os
-import lzma
 import shutil
-from database import get_monitored_animes, update_last_episode, update_anime_metadata
+import asyncio
+from .config import SOURCE_DIR, FINAL_DIR, SUBS_TEMP_DIR, COVERS_DIR
+from .database import get_monitored_animes, update_last_episode, update_anime_metadata
+from .api import (
+    fetch_latest_releases, search_anime_history, fetch_anime_metadata,
+    find_subtitles, download_chosen_subtitle
+)
 
-API_URL = "https://subsplease.org/api/?f=latest&tz=UTC"
-SEARCH_URL = "https://subsplease.org/api/?f=search&tz=UTC&s="
-ANIMETOSHO_API = "https://feed.animetosho.org/json"
-JIKAN_API = "https://api.jikan.moe/v4"
-
-# Caminhos Base
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SOURCE_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "Torrents")
-FINAL_DIR = os.path.join(BASE_DIR, "episodes")
-SUBS_TEMP_DIR = os.path.join(BASE_DIR, "legendas")
-COVERS_DIR = os.path.join(BASE_DIR, "covers")
-
-async def fetch_latest_releases():
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get(API_URL, timeout=15)
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            print(f"Error fetching from SubsPlease: {e}")
-            return {}
+_SUB_SORT_KEY = lambda s: (
+    0 if (s.get('info', {}).get('lang') == 'por'
+          and 'forced' not in s.get('info', {}).get('desc', '').lower()
+          and 'cc' not in s.get('info', {}).get('desc', '').lower())
+    else 1 if s.get('info', {}).get('lang') == 'por'
+    else 2 if s.get('info', {}).get('lang') == 'eng'
+    else 3
+)
 
 async def search_subsplease_shows(query):
     """Retorna nomes únicos de shows disponíveis no SubsPlease para a query."""
@@ -41,29 +33,6 @@ async def search_subsplease_shows(query):
             seen.add(name)
             shows.append(name)
     return shows
-
-async def fetch_anime_metadata(title_pattern):
-    """Busca título oficial, status e URL da capa no Jikan (MyAnimeList)."""
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.get(
-                f"{JIKAN_API}/anime",
-                params={"q": title_pattern, "limit": 1},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json().get("data", [])
-            if not data:
-                return None
-            item = data[0]
-            return {
-                "official_title": item.get("title_english") or item.get("title"),
-                "cover_url": item.get("images", {}).get("jpg", {}).get("large_image_url"),
-                "airing_status": item.get("status"),
-            }
-        except Exception as e:
-            print(f"Erro ao buscar metadados Jikan: {e}")
-            return None
 
 async def download_cover(url, title_pattern):
     """Baixa a imagem da capa e salva em covers/. Retorna o path local ou None."""
@@ -83,76 +52,6 @@ async def download_cover(url, title_pattern):
             print(f"Erro ao baixar capa: {e}")
             return None
 
-async def search_anime_history(query):
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get(f"{SEARCH_URL}{query}", timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            return data.items() if isinstance(data, dict) else []
-        except Exception as e:
-            print(f"Error searching anime history: {e}")
-            return []
-
-_SUB_SORT_KEY = lambda s: (
-    0 if (s.get('info', {}).get('lang') == 'por'
-          and 'forced' not in s.get('info', {}).get('desc', '').lower()
-          and 'cc' not in s.get('info', {}).get('desc', '').lower())
-    else 1 if s.get('info', {}).get('lang') == 'por'
-    else 2 if s.get('info', {}).get('lang') == 'eng'
-    else 3
-)
-
-
-async def find_subtitles(show_name, ep_num):
-    """Busca candidatos no AnimeTosho sem baixar. Retorna (subs, series_name, ep_str)."""
-    series_name = re.sub(rf's\d+|e\d+|-.*$|\d+p.*$', '', show_name, flags=re.I).strip()
-    ep_str = str(ep_num).zfill(2)
-    queries = [f'{series_name} {ep_str}', f'{series_name} Brazilian', f'{series_name} Multi']
-    all_subs, seen_ids = [], set()
-
-    async with httpx.AsyncClient() as client:
-        for q in queries:
-            try:
-                resp = await client.get(ANIMETOSHO_API, params={"q": q}, timeout=10)
-                for entry in resp.json()[:10]:
-                    if not re.search(rf'(\s|-)0?{int(ep_num)}(\D|$)', entry['title']):
-                        continue
-                    det = await client.get(ANIMETOSHO_API, params={"show": "torrent", "id": entry['id']})
-                    for f in det.json().get('files', []):
-                        if not re.search(rf'(\s|-)0?{int(ep_num)}(\D|$)', f['filename']):
-                            continue
-                        for a in f.get('attachments', []):
-                            if a.get('type') == 'subtitle' and a['id'] not in seen_ids:
-                                all_subs.append(a)
-                                seen_ids.add(a['id'])
-            except Exception as e:
-                print(f"Erro busca legenda: {e}")
-                continue
-
-    return all_subs, series_name, ep_str
-
-
-async def download_chosen_subtitle(sub, series_name, ep_str):
-    """Baixa e salva uma legenda específica. Retorna path ou None."""
-    try:
-        dl_url = f"https://storage.animetosho.org/attach/{sub['id']:08x}/file.xz"
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(dl_url, timeout=15)
-            resp.raise_for_status()
-            data = lzma.decompress(resp.content)
-        ext = sub['info'].get('codec', 'ass').lower()
-        os.makedirs(SUBS_TEMP_DIR, exist_ok=True)
-        safe = re.sub(r'[^\w\s-]', '', series_name).strip().lower()
-        filename = os.path.join(SUBS_TEMP_DIR, f"{safe}_ep{ep_str}.{ext}")
-        with open(filename, 'wb') as f:
-            f.write(data)
-        return filename
-    except Exception as e:
-        print(f"Erro download/salvar legenda: {e}")
-        return None
-
-
 async def download_subtitle(show_name, ep_num):
     """Seleciona automaticamente a melhor legenda PT-BR e baixa."""
     all_subs, series_name, ep_str = await find_subtitles(show_name, ep_num)
@@ -160,7 +59,6 @@ async def download_subtitle(show_name, ep_num):
         return None
     all_subs.sort(key=_SUB_SORT_KEY)
     return await download_chosen_subtitle(all_subs[0], series_name, ep_str)
-
 
 async def get_subtitle_candidates():
     """Retorna candidatos de legenda para todos os animes monitorados (seleção manual)."""
@@ -179,7 +77,6 @@ async def get_subtitle_candidates():
             "ep_str":      ep_str,
         })
     return candidates
-
 
 def check_subtitle_status(video_path):
     """Verifica legendas externas e embutidas (via ffprobe) de um arquivo de vídeo."""
@@ -276,12 +173,10 @@ async def organize_downloads():
                         print(f"Erro ao mover vídeo {filename}: {e}")
 
     # 2. Parear legendas com vídeos na pasta FINAL
-    # Varre a pasta de episódios final em busca de vídeos que precisem de legenda
     if os.path.exists(SUBS_TEMP_DIR):
         for video_file in os.listdir(FINAL_DIR):
             if not video_file.lower().endswith((".mkv", ".mp4", ".avi")): continue
             
-            # Suporta tanto "S01E12" (renomeado) quanto "- 12 " (SubsPlease original)
             ep_match = re.search(r'S\d+E(\d+)', video_file, re.I)
             if ep_match:
                 ep_num = ep_match.group(1).zfill(2)
@@ -291,16 +186,11 @@ async def organize_downloads():
                 ep_num = ep_match.group(1).zfill(2)
             video_name_no_ext = os.path.splitext(video_file)[0]
             
-            # Verifica se já existe uma legenda para este vídeo na pasta final
             has_sub = any(video_name_no_ext in f and f.lower().endswith((".ass", ".srt")) for f in os.listdir(FINAL_DIR))
             if has_sub: continue
 
-            # Tenta encontrar a legenda na pasta temporária
             for sub_file in os.listdir(SUBS_TEMP_DIR):
-                # A legenda temporária tem o formato: "nome_do_anime_epXX.ass"
-                # Verificamos se o ep bate e se o nome do anime está contido
                 if f"_ep{ep_num}" in sub_file.lower():
-                    # Sucesso! Move e renomeia
                     sub_ext = os.path.splitext(sub_file)[1]
                     old_sub_path = os.path.join(SUBS_TEMP_DIR, sub_file)
                     new_sub_path = os.path.join(FINAL_DIR, f"{video_name_no_ext}{sub_ext}")
@@ -340,7 +230,6 @@ async def process_releases(releases_list, monitored_list=None):
 
                 if magnet and trigger_magnet(magnet):
                     await update_last_episode(pattern, episode_num)
-                    # Baixa a legenda para a pasta temporária
                     sub_file = await download_subtitle(show_name, episode_num)
                     sub_msg = " (Legenda baixada)" if sub_file else " (Legenda não encontrada ainda)"
                     downloads_triggered.append(f"{show_name} - {episode_num} ({res}){sub_msg}")
@@ -373,10 +262,7 @@ async def force_download_subs():
             if sub_file: downloaded.append(f"{pattern} - {last_ep}")
     return downloaded
 
-
 async def refresh_single_metadata(anime_id: int, title_pattern: str):
-    """Busca e salva metadados de um único anime. Retorna o dict de metadados ou None."""
-    import asyncio
     meta = await fetch_anime_metadata(title_pattern)
     if meta:
         await update_anime_metadata(
@@ -384,10 +270,7 @@ async def refresh_single_metadata(anime_id: int, title_pattern: str):
         )
     return meta
 
-
 async def refresh_all_metadata():
-    """Atualiza metadados de todos os animes monitorados. Respeita rate limit do Jikan."""
-    import asyncio
     monitored = await get_monitored_animes()
     updated = []
     for row in monitored:
@@ -398,5 +281,5 @@ async def refresh_all_metadata():
                 anime_id, meta["official_title"], meta["cover_url"], meta["airing_status"]
             )
             updated.append(pattern)
-        await asyncio.sleep(0.4)  # Jikan: ~3 req/s
+        await asyncio.sleep(0.4)  # Jikan rate limit
     return updated
