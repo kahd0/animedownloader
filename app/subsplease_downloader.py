@@ -19,7 +19,10 @@ from downloader import (
     check_for_updates, search_anime_history, process_releases,
     organize_downloads, force_download_subs, open_path,
     FINAL_DIR, search_jikan, fetch_anime_metadata, download_cover,
+    get_subtitle_candidates, download_chosen_subtitle, check_subtitle_status,
+    refresh_single_metadata, refresh_all_metadata, COVERS_DIR, find_subtitles,
 )
+from database import set_last_episode
 
 # ─── Async bridge ─────────────────────────────────────────────────────────────
 
@@ -164,6 +167,7 @@ class AnimeMonitorApp(tk.Tk):
 
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
         self.tree.bind("<Button-3>", self._show_context_menu)
+        self.tree.bind("<Double-Button-1>", lambda e: self._action_edit_episode())
 
         # Sidebar
         self._build_sidebar(top_frame)
@@ -190,6 +194,7 @@ class AnimeMonitorApp(tk.Tk):
         ttk.Button(action_frame, text="Remover Selecionado",command=self._action_delete).pack(side=tk.LEFT, padx=4)
         ttk.Button(action_frame, text="▶ Play",             command=self._action_play).pack(side=tk.LEFT, padx=4)
         ttk.Button(action_frame, text="📁 Abrir Pasta",     command=self._action_open_folder).pack(side=tk.LEFT, padx=4)
+        ttk.Button(action_frame, text="🔄 Metadados",       command=self._action_refresh_all_metadata).pack(side=tk.LEFT, padx=4)
 
         # Log
         tk.Label(self, text="Log de Atividade", bg="#1e1e1e", fg="#888888",
@@ -215,9 +220,10 @@ class AnimeMonitorApp(tk.Tk):
         self.sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(6, 0))
         self.sidebar.pack_propagate(False)
 
-        # Capa
-        self.cover_label = tk.Label(self.sidebar, bg="#252525")
+        # Capa (clicável para ampliar)
+        self.cover_label = tk.Label(self.sidebar, bg="#252525", cursor="hand2")
         self.cover_label.pack(pady=(12, 6))
+        self.cover_label.bind("<Button-1>", self._on_cover_click)
         self._set_placeholder_cover()
 
         # Título oficial
@@ -240,6 +246,16 @@ class AnimeMonitorApp(tk.Tk):
             font=("Segoe UI", 9, "bold"),
         )
         self.sidebar_new_badge.pack(pady=(4, 0))
+
+        # Status da legenda do último episódio
+        ttk.Separator(self.sidebar, orient="horizontal").pack(fill=tk.X, padx=8, pady=(10, 4))
+        tk.Label(self.sidebar, text="Legenda", bg="#252525", fg="#555555",
+                 font=("Segoe UI", 8)).pack()
+        self.sidebar_sub_status = tk.Label(
+            self.sidebar, text="", bg="#252525", fg="#888888",
+            font=("Segoe UI", 8), wraplength=155, justify=tk.CENTER,
+        )
+        self.sidebar_sub_status.pack(padx=6, pady=(2, 0))
 
     def _set_placeholder_cover(self):
         img = Image.new("RGB", (COVER_W, COVER_H), "#333333")
@@ -278,6 +294,18 @@ class AnimeMonitorApp(tk.Tk):
         }
         for name, color in colors.items():
             self.log_text.tag_configure(name, foreground=color)
+
+    # ─── Dialog helper ────────────────────────────────────────────────────────
+
+    def _center_dialog(self, dialog, w, h):
+        """Centraliza, posiciona e ativa o grab de um Toplevel de forma segura."""
+        self.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() - w) // 2
+        y = self.winfo_y() + (self.winfo_height() - h) // 2
+        dialog.geometry(f"{w}x{h}+{x}+{y}")
+        dialog.transient(self)
+        dialog.update()          # força o mapeamento da janela antes do grab
+        dialog.grab_set()
 
     # ─── Log ──────────────────────────────────────────────────────────────────
 
@@ -360,6 +388,10 @@ class AnimeMonitorApp(tk.Tk):
 
         self.sidebar_new_badge.config(text="🔥 NOVO EPISÓDIO" if has_new else "")
 
+        # Status da legenda (busca síncrona leve — só leitura de disco + ffprobe)
+        self.sidebar_sub_status.config(text="verificando…", fg="#555555")
+        self.after(50, lambda p=data[1], i=iid: self._refresh_sub_status(p, i))
+
         # Capa
         if iid in self._cover_cache:
             self.cover_label.configure(image=self._cover_cache[iid])
@@ -389,6 +421,78 @@ class AnimeMonitorApp(tk.Tk):
                 self.cover_label.image = ref
         except Exception as e:
             print(f"Erro ao exibir capa: {e}")
+
+    def _on_cover_click(self, event=None):
+        """Abre a capa em tamanho ampliado numa janela popup."""
+        if not self._current_sidebar_iid:
+            return
+        data = self._anime_data.get(self._current_sidebar_iid)
+        if not data:
+            return
+
+        pattern = data[1]
+        safe = re.sub(r'[^\w\s-]', '', pattern).strip().lower().replace(' ', '_')
+        cover_path = os.path.join(COVERS_DIR, f"{safe}.jpg")
+        if not os.path.exists(cover_path):
+            return
+
+        try:
+            orig_img = Image.open(cover_path).convert("RGB")
+        except Exception as e:
+            print(f"Erro ao abrir capa ampliada: {e}")
+            return
+
+        self.update_idletasks()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        init = orig_img.copy()
+        init.thumbnail((int(sw * 0.75), int(sh * 0.85)), Image.LANCZOS)
+        ref = ImageTk.PhotoImage(init)
+
+        popup = tk.Toplevel(self)
+        popup.title(data[6] or pattern)
+        popup.configure(bg="#1e1e1e")
+        popup.resizable(True, True)
+        popup.minsize(150, 200)
+
+        lbl = tk.Label(popup, image=ref, bg="#1e1e1e", cursor="hand2")
+        lbl.image = ref
+        lbl.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        lbl.bind("<Button-1>", lambda e: popup.destroy())
+        popup.bind("<Escape>", lambda e: popup.destroy())
+
+        # Redimensiona a imagem quando a janela é redimensionada
+        resize_job = [None]
+        last_size = [init.width, init.height]
+
+        def _do_resize(w, h):
+            if w < 50 or h < 50:
+                return
+            tmp = orig_img.copy()
+            tmp.thumbnail((w - 8, h - 8), Image.LANCZOS)
+            new_ref = ImageTk.PhotoImage(tmp)
+            lbl.configure(image=new_ref)
+            lbl.image = new_ref
+
+        def _on_resize(event):
+            if event.widget is not popup:
+                return
+            if event.width == last_size[0] and event.height == last_size[1]:
+                return
+            last_size[0], last_size[1] = event.width, event.height
+            if resize_job[0]:
+                popup.after_cancel(resize_job[0])
+            resize_job[0] = popup.after(80, lambda w=event.width, h=event.height: _do_resize(w, h))
+
+        popup.bind("<Configure>", _on_resize)
+
+        pw = init.width + 8
+        ph = init.height + 8
+        sx = self.winfo_x() + (self.winfo_width() - pw) // 2
+        sy = self.winfo_y() + (self.winfo_height() - ph) // 2
+        popup.geometry(f"{pw}x{ph}+{sx}+{sy}")
+        popup.transient(self)
+        popup.update()
+        popup.grab_set()
 
     # ─── Autocomplete ─────────────────────────────────────────────────────────
 
@@ -497,22 +601,6 @@ class AnimeMonitorApp(tk.Tk):
 
         run_async(organize_downloads(), on_done=on_done)
 
-    def _action_download_subs(self):
-        self.log("Buscando legendas para os episódios atuais...", "blue")
-
-        def on_done(result):
-            if isinstance(result, Exception):
-                self.log(f"Erro ao buscar legendas: {result}", "red")
-                return
-            if result:
-                for item in result:
-                    self.log(f"LEGENDA BAIXADA: {item}", "green")
-                self._run_organize_logic()
-            else:
-                self.log("Nenhuma legenda nova encontrada.", "yellow")
-
-        run_async(force_download_subs(), on_done=on_done)
-
     def _action_delete(self):
         selected = self.tree.selection()
         if not selected:
@@ -615,11 +703,7 @@ class AnimeMonitorApp(tk.Tk):
         dialog.title("Confirmar Limpeza")
         dialog.configure(bg="#1e1e1e")
         dialog.resizable(False, False)
-        dialog.grab_set()
-        self.update_idletasks()
-        x = self.winfo_x() + (self.winfo_width() - 360) // 2
-        y = self.winfo_y() + (self.winfo_height() - 150) // 2
-        dialog.geometry(f"360x150+{x}+{y}")
+        self._center_dialog(dialog, 360, 150)
 
         tk.Label(
             dialog,
@@ -659,6 +743,267 @@ class AnimeMonitorApp(tk.Tk):
         self.log(f"Limpeza concluída: {deleted} arquivo(s) removido(s).", "cyan")
         run_async(clear_new_episode_flag(anime_id), on_done=lambda _: self._refresh_table())
 
+    # ─── Editar episódio / Atualizar metadados ────────────────────────────────
+
+    def _action_edit_episode(self):
+        selected = self.tree.selection()
+        if not selected:
+            self.log("Selecione um anime para editar o episódio.", "red")
+            return
+        iid  = selected[0]
+        data = self._anime_data.get(iid)
+        if not data:
+            return
+
+        anime_id    = data[0]
+        name        = data[6] or data[1]
+        current_ep  = data[2]
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Editar Episódio")
+        dialog.configure(bg="#1e1e1e")
+        dialog.resizable(False, False)
+        self._center_dialog(dialog, 340, 150)
+
+        tk.Label(dialog, text=name, bg="#1e1e1e", fg="#ffffff",
+                 font=("Segoe UI", 10, "bold"), wraplength=310).pack(pady=(14, 4))
+        tk.Label(dialog, text="Último episódio registrado:",
+                 bg="#1e1e1e", fg="#aaaaaa", font=("Segoe UI", 9)).pack()
+
+        spinbox = ttk.Spinbox(dialog, from_=0, to=99999, width=10, font=("Segoe UI", 11))
+        spinbox.set(current_ep)
+        spinbox.pack(pady=6)
+
+        saved = {"ok": False, "ep": current_ep}
+
+        def confirm():
+            try:
+                saved["ep"] = int(spinbox.get())
+            except ValueError:
+                saved["ep"] = current_ep
+            saved["ok"] = True
+            dialog.destroy()
+
+        btn_frame = tk.Frame(dialog, bg="#1e1e1e")
+        btn_frame.pack(pady=4)
+        ttk.Button(btn_frame, text="Salvar",   command=confirm).pack(side=tk.LEFT, padx=8)
+        ttk.Button(btn_frame, text="Cancelar", command=dialog.destroy).pack(side=tk.LEFT, padx=8)
+        dialog.bind("<Return>", lambda e: confirm())
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        dialog.wait_window()
+
+        if not saved["ok"]:
+            return
+        new_ep = saved["ep"]
+
+        def on_done(_):
+            self.log(f"Episódio de '{name}' atualizado: {current_ep} → {new_ep}", "cyan")
+            self._refresh_table()
+
+        run_async(set_last_episode(anime_id, new_ep), on_done=on_done)
+
+    def _action_refresh_selected_metadata(self):
+        selected = self.tree.selection()
+        if not selected:
+            self.log("Selecione um anime para atualizar os metadados.", "red")
+            return
+        iid  = selected[0]
+        data = self._anime_data.get(iid)
+        if not data:
+            return
+        anime_id, pattern = data[0], data[1]
+        name = data[6] or pattern
+        self.log(f"Buscando metadados de '{name}'...", "blue")
+
+        def on_done(result):
+            if isinstance(result, Exception) or not result:
+                self.log(f"Metadados não encontrados para '{name}'.", "yellow")
+                return
+            self.log(f"Metadados atualizados: {result.get('official_title', name)}", "cyan")
+            # Invalida cache de capa para forçar re-download
+            if iid in self._cover_cache:
+                del self._cover_cache[iid]
+            self._refresh_table()
+
+        run_async(refresh_single_metadata(anime_id, pattern), on_done=on_done)
+
+    def _action_refresh_all_metadata(self):
+        self.log("Atualizando metadados de todos os animes…", "blue")
+
+        def on_done(result):
+            if isinstance(result, Exception):
+                self.log(f"Erro ao atualizar metadados: {result}", "red")
+                return
+            count = len(result) if result else 0
+            self.log(f"Metadados atualizados: {count} anime(s).", "cyan")
+            # Limpa cache de capas para forçar re-download com imagens novas
+            self._cover_cache.clear()
+            self._current_sidebar_iid = None
+            self._refresh_table()
+
+        run_async(refresh_all_metadata(), on_done=on_done)
+
+    # ─── Subtitle status (Item 10) ────────────────────────────────────────────
+
+    def _refresh_sub_status(self, pattern: str, iid: str):
+        """Encontra o último vídeo do anime e verifica o status da legenda."""
+        if not os.path.exists(FINAL_DIR):
+            return
+        video_exts = (".mkv", ".mp4", ".avi")
+
+        def ep_sort(name):
+            m = re.search(r'S\d+E(\d+)', name, re.I) or re.search(r'[\s-]0?(\d+)[\s(]', name)
+            return int(m.group(1)) if m else 0
+
+        matches = sorted(
+            [f for f in os.listdir(FINAL_DIR)
+             if f.lower().endswith(video_exts) and pattern.lower() in f.lower()],
+            key=ep_sort,
+        )
+        if not matches:
+            if iid == self._current_sidebar_iid:
+                self.sidebar_sub_status.config(text="Sem episódios locais", fg="#555555")
+            return
+
+        video_path = os.path.join(FINAL_DIR, matches[-1])
+        status = check_subtitle_status(video_path)
+
+        if status["embedded"] and status["external"]:
+            langs = ", ".join(status["embedded_langs"])
+            text, color = f"✓ Embutida ({langs}) + externa", "#4caf50"
+        elif status["embedded"]:
+            langs = ", ".join(status["embedded_langs"]) or "?"
+            text, color = f"✓ Embutida ({langs})", "#4caf50"
+        elif status["external"]:
+            text, color = f"✓ {status['external']}", "#4caf50"
+        else:
+            text, color = "⚠ Sem legenda", "#ff9800"
+
+        if iid == self._current_sidebar_iid:
+            self.sidebar_sub_status.config(text=text, fg=color)
+
+    # ─── Subtitle selector (Item 9) ───────────────────────────────────────────
+
+    def _action_download_subs(self):
+        self.log("Buscando legendas disponíveis...", "blue")
+
+        def on_candidates(result):
+            if isinstance(result, Exception):
+                self.log(f"Erro ao buscar legendas: {result}", "red")
+                return
+            self._process_subtitle_candidates(result)
+
+        run_async(get_subtitle_candidates(), on_done=on_candidates)
+
+    def _process_subtitle_candidates(self, candidates):
+        if not candidates:
+            self.log("Nenhum anime com episódio registrado.", "yellow")
+            return
+
+        to_auto, to_select = [], []
+        for c in candidates:
+            if not c["subs"]:
+                self.log(f"Legenda não encontrada: {c['pattern']} - Ep {c['last_ep']}", "yellow")
+            elif len(c["subs"]) == 1:
+                to_auto.append(c)
+            else:
+                to_select.append(c)
+
+        for c in to_auto:
+            run_async(
+                download_chosen_subtitle(c["subs"][0], c["series_name"], c["ep_str"]),
+                on_done=lambda path, p=c["pattern"], ep=c["ep_str"]: self._on_sub_downloaded(path, p, ep),
+            )
+
+        self._subtitle_selection_queue(to_select, 0)
+
+    def _subtitle_selection_queue(self, queue, index):
+        if index >= len(queue):
+            if queue:
+                self._run_organize_logic()
+            return
+        c = queue[index]
+        chosen = self._show_subtitle_selector(c["pattern"], c["last_ep"], c["subs"])
+        if chosen:
+            run_async(
+                download_chosen_subtitle(chosen, c["series_name"], c["ep_str"]),
+                on_done=lambda path, p=c["pattern"], ep=c["ep_str"]: self._on_sub_downloaded(path, p, ep),
+            )
+        else:
+            self.log(f"Legenda pulada: {c['pattern']} - Ep {c['last_ep']}", "yellow")
+        self._subtitle_selection_queue(queue, index + 1)
+
+    def _show_subtitle_selector(self, pattern, ep_num, subs):
+        """Diálogo modal de seleção. Retorna o sub escolhido ou None."""
+        dialog = tk.Toplevel(self)
+        dialog.title(f"{pattern} — Ep {ep_num}")
+        dialog.configure(bg="#1e1e1e")
+        dialog.resizable(False, True)
+        h = min(120 + len(subs) * 52, 520)
+        self._center_dialog(dialog, 500, h)
+
+        tk.Label(
+            dialog,
+            text=f"{len(subs)} legendas disponíveis para:\n{pattern} — Ep {ep_num}",
+            bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10, "bold"), justify=tk.CENTER,
+        ).pack(pady=(14, 8))
+
+        selected_var = tk.IntVar(value=0)
+        sub_frame = tk.Frame(dialog, bg="#1e1e1e")
+        sub_frame.pack(fill=tk.BOTH, expand=True, padx=14)
+
+        lang_flags = {"por": "🇧🇷 PT", "eng": "🇬🇧 EN", "spa": "🇪🇸 ES"}
+
+        for i, sub in enumerate(subs):
+            info     = sub.get("info", {})
+            lang     = info.get("lang", "unk")
+            desc     = info.get("desc", "")
+            filename = sub.get("filename", f"Legenda {i + 1}")
+            lang_str = lang_flags.get(lang, lang.upper())
+
+            row = tk.Frame(sub_frame, bg="#2a2a2a")
+            row.pack(fill=tk.X, pady=2)
+
+            tk.Radiobutton(
+                row, variable=selected_var, value=i,
+                bg="#2a2a2a", activebackground="#2a2a2a",
+                selectcolor="#1565c0", fg="#ffffff",
+            ).pack(side=tk.LEFT, padx=6)
+
+            info_col = tk.Frame(row, bg="#2a2a2a")
+            info_col.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=5)
+
+            name_text = filename if len(filename) <= 58 else filename[:55] + "…"
+            tk.Label(info_col, text=name_text, bg="#2a2a2a", fg="#ffffff",
+                     font=("Segoe UI", 9), anchor=tk.W).pack(anchor=tk.W)
+            detail = lang_str + (f"  •  {desc}" if desc else "")
+            tk.Label(info_col, text=detail, bg="#2a2a2a", fg="#888888",
+                     font=("Segoe UI", 8), anchor=tk.W).pack(anchor=tk.W)
+
+        chosen = {"sub": None}
+
+        def confirm():
+            chosen["sub"] = subs[selected_var.get()]
+            dialog.destroy()
+
+        btn_frame = tk.Frame(dialog, bg="#1e1e1e")
+        btn_frame.pack(pady=10)
+        ttk.Button(btn_frame, text="Baixar Selecionada", command=confirm).pack(side=tk.LEFT, padx=8)
+        ttk.Button(btn_frame, text="Pular", command=dialog.destroy).pack(side=tk.LEFT, padx=8)
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        dialog.wait_window()
+        return chosen["sub"]
+
+    def _on_sub_downloaded(self, path, pattern, ep_str):
+        if path and not isinstance(path, Exception):
+            self.log(f"LEGENDA BAIXADA: {pattern} - Ep {int(ep_str)}", "green")
+            # Atualiza status na sidebar se este anime estiver selecionado
+            for iid, data in self._anime_data.items():
+                if data[1] == pattern and iid == self._current_sidebar_iid:
+                    self.after(100, lambda p=pattern, i=iid: self._refresh_sub_status(p, i))
+        else:
+            self.log(f"Falha ao baixar legenda: {pattern} - Ep {int(ep_str)}", "red")
+
     def _periodic_refresh(self):
         self._action_refresh()
         self.after(600_000, self._periodic_refresh)
@@ -670,19 +1015,71 @@ class AnimeMonitorApp(tk.Tk):
         if not row:
             return
         self.tree.selection_set(row)
+
+        if hasattr(self, '_ctx_menu') and self._ctx_menu:
+            try:
+                self._ctx_menu.unpost()
+            except Exception:
+                pass
+            self._ctx_menu = None
+
         menu = tk.Menu(self, tearoff=0, bg="#2a2a2a", fg="#ffffff",
                        activebackground="#1565c0", activeforeground="#ffffff",
                        font=("Segoe UI", 10))
-        menu.add_command(label="▶ Play",              command=self._action_play)
-        menu.add_command(label="📁 Abrir Pasta",       command=self._action_open_folder)
+        menu.add_command(label="▶ Play",                  command=self._action_play)
+        menu.add_command(label="📁 Abrir Pasta",           command=self._action_open_folder)
         menu.add_separator()
-        menu.add_command(label="✓ Marcar como Visto", command=self._action_mark_watched)
+        menu.add_command(label="✏ Editar Episódio",        command=self._action_edit_episode)
+        menu.add_command(label="🔄 Atualizar Metadados",   command=self._action_refresh_selected_metadata)
+        menu.add_command(label="🔍 Buscar Legenda",        command=self._action_force_sub_selected)
         menu.add_separator()
-        menu.add_command(label="🗑 Remover da Lista",  command=self._action_delete)
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
+        menu.add_command(label="✓ Marcar como Visto",      command=self._action_mark_watched)
+        menu.add_separator()
+        menu.add_command(label="🗑 Remover da Lista",       command=self._action_delete)
+
+        self._ctx_menu = menu
+        menu.bind("<Unmap>", lambda e: setattr(self, '_ctx_menu', None))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _action_force_sub_selected(self):
+        selected = self.tree.selection()
+        if not selected:
+            self.log("Selecione um anime para buscar a legenda.", "red")
+            return
+        iid  = selected[0]
+        data = self._anime_data.get(iid)
+        if not data:
+            return
+        pattern, last_ep = data[1], data[2]
+        if last_ep <= 0:
+            self.log(f"Nenhum episódio registrado para '{pattern}'.", "yellow")
+            return
+        self.log(f"Buscando legenda: {pattern} - Ep {last_ep}...", "blue")
+
+        def on_candidates(result):
+            if isinstance(result, Exception):
+                self.log(f"Erro ao buscar legenda: {result}", "red")
+                return
+            subs, series_name, ep_str = result
+            if not subs:
+                self.log(f"Legenda não encontrada: {pattern} - Ep {last_ep}", "yellow")
+                return
+            if len(subs) == 1:
+                run_async(
+                    download_chosen_subtitle(subs[0], series_name, ep_str),
+                    on_done=lambda path: self._on_sub_downloaded(path, pattern, ep_str),
+                )
+            else:
+                chosen = self._show_subtitle_selector(pattern, last_ep, subs)
+                if chosen:
+                    run_async(
+                        download_chosen_subtitle(chosen, series_name, ep_str),
+                        on_done=lambda path: self._on_sub_downloaded(path, pattern, ep_str),
+                    )
+                else:
+                    self.log(f"Legenda pulada: {pattern} - Ep {last_ep}", "yellow")
+
+        run_async(find_subtitles(pattern, last_ep), on_done=on_candidates)
 
     # ─── Add Anime ────────────────────────────────────────────────────────────
 
@@ -730,11 +1127,7 @@ class AnimeMonitorApp(tk.Tk):
         dialog.title(name)
         dialog.configure(bg="#1e1e1e")
         dialog.resizable(False, False)
-        dialog.grab_set()
-        self.update_idletasks()
-        x = self.winfo_x() + (self.winfo_width() - 340) // 2
-        y = self.winfo_y() + (self.winfo_height() - 160) // 2
-        dialog.geometry(f"340x160+{x}+{y}")
+        self._center_dialog(dialog, 340, 160)
 
         msg = f"{max_ep} episódios encontrados." if max_ep > 0 else "Nenhum episódio encontrado no histórico."
         tk.Label(dialog, text=msg, bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10)).pack(pady=(16, 4))

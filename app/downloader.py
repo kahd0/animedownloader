@@ -103,26 +103,32 @@ async def search_anime_history(query):
             print(f"Error searching anime history: {e}")
             return []
 
-async def download_subtitle(show_name, ep_num):
-    """Busca e baixa a melhor legenda PT-BR no AnimeTosho"""
+_SUB_SORT_KEY = lambda s: (
+    0 if (s.get('info', {}).get('lang') == 'por'
+          and 'forced' not in s.get('info', {}).get('desc', '').lower()
+          and 'cc' not in s.get('info', {}).get('desc', '').lower())
+    else 1 if s.get('info', {}).get('lang') == 'por'
+    else 2 if s.get('info', {}).get('lang') == 'eng'
+    else 3
+)
+
+
+async def find_subtitles(show_name, ep_num):
+    """Busca candidatos no AnimeTosho sem baixar. Retorna (subs, series_name, ep_str)."""
     series_name = re.sub(rf's\d+|e\d+|-.*$|\d+p.*$', '', show_name, flags=re.I).strip()
     ep_str = str(ep_num).zfill(2)
-    
     queries = [f'{series_name} {ep_str}', f'{series_name} Brazilian', f'{series_name} Multi']
-    all_subs = []
-    seen_ids = set()
-    
+    all_subs, seen_ids = [], set()
+
     async with httpx.AsyncClient() as client:
         for q in queries:
             try:
                 resp = await client.get(ANIMETOSHO_API, params={"q": q}, timeout=10)
-                results = resp.json()
-                for entry in results[:10]:
+                for entry in resp.json()[:10]:
                     if not re.search(rf'(\s|-)0?{int(ep_num)}(\D|$)', entry['title']):
                         continue
-                    det_resp = await client.get(ANIMETOSHO_API, params={"show": "torrent", "id": entry['id']})
-                    details = det_resp.json()
-                    for f in details.get('files', []):
+                    det = await client.get(ANIMETOSHO_API, params={"show": "torrent", "id": entry['id']})
+                    for f in det.json().get('files', []):
                         if not re.search(rf'(\s|-)0?{int(ep_num)}(\D|$)', f['filename']):
                             continue
                         for a in f.get('attachments', []):
@@ -133,36 +139,85 @@ async def download_subtitle(show_name, ep_num):
                 print(f"Erro busca legenda: {e}")
                 continue
 
-    if not all_subs: return None
+    return all_subs, series_name, ep_str
 
-    def sort_key(s):
-        info = s.get('info', {})
-        lang = info.get('lang', 'unk')
-        desc = info.get('desc', '').lower()
-        if lang == 'por':
-            return 0 if "forced" not in desc and "cc" not in desc else 1
-        return 2 if lang == 'eng' else 3
-    
-    all_subs.sort(key=sort_key)
-    best_sub = all_subs[0]
-    
+
+async def download_chosen_subtitle(sub, series_name, ep_str):
+    """Baixa e salva uma legenda específica. Retorna path ou None."""
     try:
-        dl_url = f"https://storage.animetosho.org/attach/{best_sub['id']:08x}/file.xz"
+        dl_url = f"https://storage.animetosho.org/attach/{sub['id']:08x}/file.xz"
         async with httpx.AsyncClient() as client:
             resp = await client.get(dl_url, timeout=15)
             resp.raise_for_status()
             data = lzma.decompress(resp.content)
-            
-        ext = best_sub['info'].get('codec', 'ass').lower()
+        ext = sub['info'].get('codec', 'ass').lower()
         os.makedirs(SUBS_TEMP_DIR, exist_ok=True)
-        # Limpa o nome do padrão para o arquivo temporário
-        safe_pattern = re.sub(r'[^\w\s-]', '', series_name).strip().lower()
-        filename = os.path.join(SUBS_TEMP_DIR, f"{safe_pattern}_ep{ep_str}.{ext}")
-        with open(filename, 'wb') as f: f.write(data)
+        safe = re.sub(r'[^\w\s-]', '', series_name).strip().lower()
+        filename = os.path.join(SUBS_TEMP_DIR, f"{safe}_ep{ep_str}.{ext}")
+        with open(filename, 'wb') as f:
+            f.write(data)
         return filename
     except Exception as e:
         print(f"Erro download/salvar legenda: {e}")
         return None
+
+
+async def download_subtitle(show_name, ep_num):
+    """Seleciona automaticamente a melhor legenda PT-BR e baixa."""
+    all_subs, series_name, ep_str = await find_subtitles(show_name, ep_num)
+    if not all_subs:
+        return None
+    all_subs.sort(key=_SUB_SORT_KEY)
+    return await download_chosen_subtitle(all_subs[0], series_name, ep_str)
+
+
+async def get_subtitle_candidates():
+    """Retorna candidatos de legenda para todos os animes monitorados (seleção manual)."""
+    monitored = await get_monitored_animes()
+    candidates = []
+    for row in monitored:
+        pattern, last_ep = row[1], row[2]
+        if last_ep <= 0:
+            continue
+        subs, series_name, ep_str = await find_subtitles(pattern, last_ep)
+        candidates.append({
+            "pattern":     pattern,
+            "last_ep":     last_ep,
+            "subs":        subs,
+            "series_name": series_name,
+            "ep_str":      ep_str,
+        })
+    return candidates
+
+
+def check_subtitle_status(video_path):
+    """Verifica legendas externas e embutidas (via ffprobe) de um arquivo de vídeo."""
+    import json as _json
+    result = {"external": None, "embedded": False, "embedded_langs": []}
+
+    base = os.path.splitext(video_path)[0]
+    for ext in (".ass", ".srt", ".sub"):
+        if os.path.exists(base + ext):
+            result["external"] = os.path.basename(base + ext)
+            break
+
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", video_path],
+            capture_output=True, text=True, timeout=5,
+        )
+        if proc.returncode == 0:
+            streams = _json.loads(proc.stdout).get("streams", [])
+            sub_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
+            if sub_streams:
+                result["embedded"] = True
+                result["embedded_langs"] = [
+                    s.get("tags", {}).get("language", "und") for s in sub_streams
+                ]
+    except Exception:
+        pass
+
+    return result
 
 def open_path(path):
     """Abre um arquivo ou pasta com o aplicativo padrão do sistema."""
@@ -298,7 +353,7 @@ async def process_releases(releases_list, monitored_list=None):
                     sub_file = await download_subtitle(show_name, episode_num)
                     sub_msg = " (Legenda baixada)" if sub_file else " (Legenda não encontrada ainda)"
                     downloads_triggered.append(f"{show_name} - {episode_num} ({res}){sub_msg}")
-                    monitored_list = [(aid, p, episode_num if p == pattern else lep, r) for aid, p, lep, r in monitored_list]
+                    monitored_list = [(aid, p, episode_num if p == pattern else lep, r, *rest) for aid, p, lep, r, *rest in monitored_list]
     
     return downloads_triggered
 
@@ -326,3 +381,31 @@ async def force_download_subs():
             sub_file = await download_subtitle(pattern, last_ep)
             if sub_file: downloaded.append(f"{pattern} - {last_ep}")
     return downloaded
+
+
+async def refresh_single_metadata(anime_id: int, title_pattern: str):
+    """Busca e salva metadados de um único anime. Retorna o dict de metadados ou None."""
+    import asyncio
+    meta = await fetch_anime_metadata(title_pattern)
+    if meta:
+        await update_anime_metadata(
+            anime_id, meta["official_title"], meta["cover_url"], meta["airing_status"]
+        )
+    return meta
+
+
+async def refresh_all_metadata():
+    """Atualiza metadados de todos os animes monitorados. Respeita rate limit do Jikan."""
+    import asyncio
+    monitored = await get_monitored_animes()
+    updated = []
+    for row in monitored:
+        anime_id, pattern = row[0], row[1]
+        meta = await fetch_anime_metadata(pattern)
+        if meta:
+            await update_anime_metadata(
+                anime_id, meta["official_title"], meta["cover_url"], meta["airing_status"]
+            )
+            updated.append(pattern)
+        await asyncio.sleep(0.4)  # Jikan: ~3 req/s
+    return updated

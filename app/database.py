@@ -80,6 +80,15 @@ async def update_anime_metadata(anime_id, official_title, cover_url, airing_stat
         )
         await db.commit()
 
+async def set_last_episode(anime_id, episode_num):
+    """Atualiza o episódio incondicionalmente (para correções manuais)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE monitored SET last_episode = ? WHERE id = ?",
+            (episode_num, anime_id)
+        )
+        await db.commit()
+
 async def clear_new_episode_flag(anime_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
