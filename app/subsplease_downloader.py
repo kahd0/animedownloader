@@ -18,7 +18,7 @@ from database import (
 from downloader import (
     check_for_updates, search_anime_history, process_releases,
     organize_downloads, force_download_subs, open_path,
-    FINAL_DIR, search_jikan, fetch_anime_metadata, download_cover,
+    FINAL_DIR, search_subsplease_shows, fetch_anime_metadata, download_cover,
     get_subtitle_candidates, download_chosen_subtitle, check_subtitle_status,
     refresh_single_metadata, refresh_all_metadata, COVERS_DIR, find_subtitles,
 )
@@ -507,7 +507,7 @@ class AnimeMonitorApp(tk.Tk):
         if self._suggest_after_id:
             self.after_cancel(self._suggest_after_id)
         query = self.entry.get().strip()
-        if len(query) < 3 or ":" in query:
+        if len(query) < 3:
             self._close_suggestions()
             return
         self._suggest_after_id = self.after(420, lambda: self._fetch_suggestions(query))
@@ -520,7 +520,7 @@ class AnimeMonitorApp(tk.Tk):
             if not self.entry.get().strip().lower().startswith(query[:3].lower()):
                 return
             self._show_suggestions(results)
-        run_async(search_jikan(query), on_done=on_done)
+        run_async(search_subsplease_shows(query), on_done=on_done)
 
     def _show_suggestions(self, titles):
         self._close_suggestions()
@@ -1090,47 +1090,47 @@ class AnimeMonitorApp(tk.Tk):
             self.log("Digite o nome do anime antes de adicionar.", "red")
             return
 
-        if ":" in raw:
-            parts = raw.rsplit(":", 1)
-            name = parts[0].strip()
-            try:
-                start_ep = int(parts[1].strip())
-            except ValueError:
-                start_ep = 0
-            self._confirm_add(name, start_ep, history=None)
-            return
-
         name = raw
         self.log(f"Buscando histórico de '{name}'...", "blue")
 
         def on_history(result):
             if isinstance(result, Exception):
                 self.log(f"Erro ao buscar histórico: {result}", "red")
-                history, max_ep = None, 0
+                history, max_ep, feed_name = None, 0, name
             else:
                 history = list(result) if result else []
                 max_ep = 0
+                feed_counts: dict[str, int] = {}
                 for item in history:
                     info = item[1] if isinstance(item, tuple) else item
+                    fn = info.get('show', '') if isinstance(info, dict) else ""
+                    if fn:
+                        feed_counts[fn] = feed_counts.get(fn, 0) + 1
                     try:
                         ep = int(info.get("episode", 0))
                         if ep > max_ep:
                             max_ep = ep
                     except (TypeError, ValueError):
                         pass
-            self._show_episode_dialog(name, max_ep, history)
+                feed_name = max(feed_counts, key=feed_counts.get) if feed_counts else name
+            self._show_episode_dialog(name, max_ep, history, feed_name)
 
         run_async(search_anime_history(name), on_done=on_history)
 
-    def _show_episode_dialog(self, name: str, max_ep: int, history):
+    def _show_episode_dialog(self, name: str, max_ep: int, history, feed_name: str = ""):
+        feed_name = feed_name or name
         dialog = tk.Toplevel(self)
-        dialog.title(name)
+        dialog.title(feed_name)
         dialog.configure(bg="#1e1e1e")
         dialog.resizable(False, False)
-        self._center_dialog(dialog, 340, 160)
+        height = 185 if feed_name != name else 160
+        self._center_dialog(dialog, 340, height)
 
-        msg = f"{max_ep} episódios encontrados." if max_ep > 0 else "Nenhum episódio encontrado no histórico."
-        tk.Label(dialog, text=msg, bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10)).pack(pady=(16, 4))
+        if feed_name != name:
+            tk.Label(dialog, text=f"Feed: {feed_name}", bg="#1e1e1e", fg="#4ec9b0",
+                     font=("Segoe UI", 9), wraplength=310).pack(pady=(12, 0))
+        msg = f"Último episódio no histórico: {max_ep}." if max_ep > 0 else "Nenhum episódio encontrado no histórico."
+        tk.Label(dialog, text=msg, bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10)).pack(pady=(8, 4))
         tk.Label(dialog, text="A partir de qual episódio deseja baixar?",
                  bg="#1e1e1e", fg="#aaaaaa", font=("Segoe UI", 9)).pack()
 
@@ -1157,7 +1157,7 @@ class AnimeMonitorApp(tk.Tk):
         dialog.wait_window()
 
         if chosen["ep"] is not None:
-            self._confirm_add(name, chosen["ep"], history)
+            self._confirm_add(feed_name, chosen["ep"], history)
 
     def _confirm_add(self, name: str, start_ep: int, history):
         def on_added(result):
@@ -1172,7 +1172,6 @@ class AnimeMonitorApp(tk.Tk):
             self.entry.delete(0, tk.END)
             self._refresh_table()
 
-            # Busca metadados em background (capa, título oficial, status)
             self._fetch_metadata_for(name)
 
             if history:

@@ -30,26 +30,17 @@ async def fetch_latest_releases():
             print(f"Error fetching from SubsPlease: {e}")
             return {}
 
-async def search_jikan(query):
-    """Retorna lista de títulos sugeridos pelo MyAnimeList via Jikan API."""
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.get(
-                f"{JIKAN_API}/anime",
-                params={"q": query, "limit": 8, "sfw": True},
-                timeout=8,
-            )
-            resp.raise_for_status()
-            data = resp.json().get("data", [])
-            results = []
-            for item in data:
-                title = item.get("title_english") or item.get("title", "")
-                if title:
-                    results.append(title)
-            return results
-        except Exception as e:
-            print(f"Erro Jikan: {e}")
-            return []
+async def search_subsplease_shows(query):
+    """Retorna nomes únicos de shows disponíveis no SubsPlease para a query."""
+    items = await search_anime_history(query)
+    seen, shows = set(), []
+    for item in items:
+        info = item[1] if isinstance(item, tuple) else item
+        name = info.get('show', '') if isinstance(info, dict) else ''
+        if name and name not in seen:
+            seen.add(name)
+            shows.append(name)
+    return shows
 
 async def fetch_anime_metadata(title_pattern):
     """Busca título oficial, status e URL da capa no Jikan (MyAnimeList)."""
