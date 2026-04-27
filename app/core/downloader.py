@@ -13,6 +13,7 @@ from .api import (
     fetch_latest_releases, search_anime_history, fetch_anime_metadata,
     find_subtitles, download_chosen_subtitle
 )
+from ..utils.episode_parser import extract_episode_number
 
 _SUB_SORT_KEY = lambda s: (
     0 if (s.get('info', {}).get('lang') == 'por'
@@ -84,7 +85,7 @@ async def get_subtitle_candidates_for_anime(pattern):
     video_exts = (".mkv", ".mp4", ".avi")
     seen_eps: set[int] = set()
     candidates = []
-    
+
     source_dir = get_source_dir()
     final_dir = get_final_dir()
 
@@ -92,21 +93,19 @@ async def get_subtitle_candidates_for_anime(pattern):
         if not os.path.exists(search_dir):
             continue
 
+        dir_files = await asyncio.to_thread(os.listdir, search_dir)
         videos = sorted(
-            f for f in os.listdir(search_dir)
+            f for f in dir_files
             if f.lower().endswith(video_exts) and matches_pattern(f, pattern)
         )
 
         for video_file in videos:
-            m = re.search(r'[Ss]\d+[Ee](\d+)', video_file) or re.search(r'(?:[\s-])0?(\d+)(?:\D|$)', video_file)
-            if not m:
-                continue
-            ep_num = int(m.group(1))
-            if ep_num in seen_eps:
+            ep_num = extract_episode_number(video_file)
+            if ep_num is None or ep_num in seen_eps:
                 continue
             seen_eps.add(ep_num)
 
-            status = check_subtitle_status(os.path.join(search_dir, video_file))
+            status = await asyncio.to_thread(check_subtitle_status, os.path.join(search_dir, video_file))
             has_pt = "por" in (status.get("embedded_langs") or [])
             if status["external"] or has_pt:
                 continue
@@ -173,13 +172,14 @@ async def organize_downloads():
     """Move vídeos e busca legendas correspondentes"""
     source_dir = get_source_dir()
     final_dir = get_final_dir()
-    os.makedirs(final_dir, exist_ok=True)
+    await asyncio.to_thread(os.makedirs, final_dir, exist_ok=True)
     moved_files = []
 
     # 1. Mover vídeos da pasta de Downloads para a pasta FINAL
     if os.path.exists(source_dir):
         monitored = await get_monitored_animes()
-        for filename in os.listdir(source_dir):
+        source_files = await asyncio.to_thread(os.listdir, source_dir)
+        for filename in source_files:
             if filename.endswith((".!qB", ".part")): continue
             if not filename.lower().endswith((".mkv", ".mp4", ".avi")): continue
 
@@ -189,7 +189,7 @@ async def organize_downloads():
                     new_name = smart_rename(filename)
                     new_path = os.path.join(final_dir, new_name)
                     try:
-                        shutil.move(old_path, new_path)
+                        await asyncio.to_thread(shutil.move, old_path, new_path)
                         if new_name != filename:
                             moved_files.append(f"Renomeado: {filename} → {new_name}")
                         else:
@@ -198,33 +198,40 @@ async def organize_downloads():
                         print(f"Erro ao mover vídeo {filename}: {e}")
 
     # 2. Parear legendas com vídeos na pasta FINAL
-    if os.path.exists(get_subs_dir()):
-        for video_file in os.listdir(final_dir):
+    subs_dir = get_subs_dir()
+    if os.path.exists(subs_dir):
+        final_files = await asyncio.to_thread(os.listdir, final_dir)
+        subs_files = await asyncio.to_thread(os.listdir, subs_dir)
+        final_set = set(final_files)
+
+        for video_file in final_files:
             if not video_file.lower().endswith((".mkv", ".mp4", ".avi")): continue
-            
-            ep_match = re.search(r'S\d+E(\d+)', video_file, re.I)
-            if ep_match:
-                ep_num = ep_match.group(1).zfill(2)
-            else:
-                ep_match = re.search(r'(?:[\s-])0?(\d+)(?:\D|$)', video_file)
-                if not ep_match: continue
-                ep_num = ep_match.group(1).zfill(2)
+
+            ep_num = extract_episode_number(video_file)
+            if ep_num is None: continue
+            ep_num_str = str(ep_num).zfill(2)
+
             video_name_no_ext = os.path.splitext(video_file)[0]
-            
-            has_sub = any(video_name_no_ext in f and f.lower().endswith((".ass", ".srt")) for f in os.listdir(final_dir))
+            has_sub = any(
+                f.startswith(video_name_no_ext) and f.lower().endswith((".ass", ".srt"))
+                for f in final_set
+            )
             if has_sub: continue
 
-            for sub_file in os.listdir(get_subs_dir()):
-                if f"_ep{ep_num}" in sub_file.lower():
+            for sub_file in subs_files:
+                if f"_ep{ep_num_str}" in sub_file.lower():
                     sub_ext = os.path.splitext(sub_file)[1]
-                    old_sub_path = os.path.join(get_subs_dir(), sub_file)
-                    new_sub_path = os.path.join(final_dir, f"{video_name_no_ext}{sub_ext}")
+                    old_sub_path = os.path.join(subs_dir, sub_file)
+                    new_sub_name = f"{video_name_no_ext}{sub_ext}"
+                    new_sub_path = os.path.join(final_dir, new_sub_name)
                     try:
-                        shutil.move(old_sub_path, new_sub_path)
+                        await asyncio.to_thread(shutil.move, old_sub_path, new_sub_path)
+                        final_set.add(new_sub_name)
                         moved_files.append(f"Legenda pareada: {video_file}")
-                    except Exception as e: print(f"Erro ao mover legenda {sub_file}: {e}")
+                    except Exception as e:
+                        print(f"Erro ao mover legenda {sub_file}: {e}")
                     break
-                    
+
     return moved_files
 
 async def process_releases(releases_list, monitored_list=None):

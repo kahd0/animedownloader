@@ -1,6 +1,7 @@
+import asyncio
+import os
 import tkinter as tk
 from tkinter import ttk
-import os
 from ...core.database import clear_new_episode_flag
 from ...utils.async_bridge import run_async
 
@@ -41,19 +42,27 @@ class ConfirmClearDialog(tk.Toplevel):
         ttk.Button(btn_frame, text="Cancelar", command=self.destroy).pack(side=tk.LEFT, padx=8)
 
     def _confirm(self):
-        deleted = 0
-        for fpath in self.files_to_delete:
-            try:
-                os.remove(fpath)
-                deleted += 1
-                if self.log_callback:
-                    self.log_callback(f"Deletado: {os.path.basename(fpath)}", "orange")
-            except Exception as e:
-                if self.log_callback:
-                    self.log_callback(f"Erro ao deletar {os.path.basename(fpath)}: {e}", "red")
-        
-        if self.log_callback:
-            self.log_callback(f"Limpeza concluída: {deleted} arquivo(s) removido(s).", "cyan")
-            
-        run_async(clear_new_episode_flag(self.anime_id), on_done=lambda _: self.refresh_callback())
+        files = list(self.files_to_delete)
+        anime_id = self.anime_id
+        log_cb = self.log_callback
+        refresh_cb = self.refresh_callback
+
+        async def do_all():
+            deleted = 0
+            for fpath in files:
+                try:
+                    await asyncio.to_thread(os.remove, fpath)
+                    deleted += 1
+                except Exception:
+                    pass
+            await clear_new_episode_flag(anime_id)
+            return deleted
+
+        def on_done(result):
+            deleted = result if not isinstance(result, Exception) else 0
+            if log_cb:
+                log_cb(f"Limpeza concluída: {deleted} arquivo(s) removido(s).", "cyan")
+            refresh_cb()
+
+        run_async(do_all(), on_done=on_done)
         self.destroy()

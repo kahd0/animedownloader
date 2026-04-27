@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import tkinter as tk
@@ -21,6 +22,7 @@ from ..core.downloader import (
 )
 from ..core.api import check_for_app_updates
 from ..utils.async_bridge import run_async, set_app_ref, stop_loop
+from ..utils.episode_parser import extract_episode_number
 
 # Importação de Componentes e Diálogos
 from .styles import apply_styles
@@ -144,12 +146,35 @@ class AnimeMonitorApp(tk.Tk):
         run_async(check())
 
     async def _load_table_async(self):
-        return await get_monitored_animes()
+        animes = await get_monitored_animes()
+        final_dir = get_final_dir()
+        episode_map: dict[str, int] = {}
+        if os.path.exists(final_dir):
+            def _scan():
+                em: dict[str, int] = {}
+                try:
+                    for f in os.listdir(final_dir):
+                        if not f.lower().endswith((".mkv", ".mp4")):
+                            continue
+                        ep = extract_episode_number(f)
+                        if ep is None:
+                            continue
+                        for anime in animes:
+                            if matches_pattern(f, anime[1]):
+                                key = anime[1].lower()
+                                if em.get(key, 0) < ep:
+                                    em[key] = ep
+                except OSError:
+                    pass
+                return em
+            episode_map = await asyncio.to_thread(_scan)
+        return animes, episode_map
 
-    def _on_table_loaded(self, animes):
-        if isinstance(animes, Exception):
-            self.log(f"Erro ao carregar tabela: {animes}", "red")
+    def _on_table_loaded(self, result):
+        if isinstance(result, Exception):
+            self.log(f"Erro ao carregar tabela: {result}", "red")
             return
+        animes, episode_map = result
         for row in self.tree.get_children():
             self.tree.delete(row)
         self._anime_data.clear()
@@ -161,20 +186,9 @@ class AnimeMonitorApp(tk.Tk):
             status_raw = anime[7] or ""
             status_pt = STATUS_PT.get(status_raw, status_raw or "—")
             has_new = bool(anime[8])
-            
-            # Calcular maior episódio local
+
             watched_ep = anime[2]
-            local_max = watched_ep
-            pattern = anime[1].lower()
-            final_dir = get_final_dir()
-            if os.path.exists(final_dir):
-                for f in os.listdir(final_dir):
-                    if f.lower().endswith((".mkv", ".mp4")) and matches_pattern(f, pattern):
-                        m = re.search(r'S\d+E(\d+)', f, re.I) or re.search(r'[\s-]0?(\d+)[\s(]', f)
-                        if m:
-                            num = int(m.group(1))
-                            if num > local_max: local_max = num
-            
+            local_max = episode_map.get(anime[1].lower(), watched_ep)
             ep_display = f"{watched_ep} / {local_max}" if local_max > watched_ep else str(watched_ep)
 
             tags = []
@@ -269,17 +283,24 @@ class AnimeMonitorApp(tk.Tk):
         if not selected: return
         data = self._anime_data.get(selected[0])
         if not data: return
-        pattern = data[1].lower()
+        pattern = data[1]
         final_dir = get_final_dir()
         if not os.path.exists(final_dir): return
-        matches = [f for f in os.listdir(final_dir) if f.lower().endswith((".mkv", ".mp4")) and matches_pattern(f, pattern)]
-        if not matches:
-            self.log(f"Nenhum episódio encontrado para '{pattern}'.", "yellow")
-            return
-        if len(matches) == 1:
-            open_path(os.path.join(final_dir, matches[0]))
-        else:
-            PlaySelectorDialog(self, data[6] or data[1], matches, self.log)
+
+        def _find():
+            return [f for f in os.listdir(final_dir)
+                    if f.lower().endswith((".mkv", ".mp4")) and matches_pattern(f, pattern)]
+
+        def on_found(result):
+            if isinstance(result, Exception) or not result:
+                self.log(f"Nenhum episódio encontrado para '{pattern}'.", "yellow")
+                return
+            if len(result) == 1:
+                open_path(os.path.join(final_dir, result[0]))
+            else:
+                PlaySelectorDialog(self, data[6] or data[1], result, self.log)
+
+        run_async(asyncio.to_thread(_find), on_done=on_found)
 
     def _action_mark_watched(self):
         selected = self.tree.selection()
@@ -289,19 +310,27 @@ class AnimeMonitorApp(tk.Tk):
         if not data: return
         anime_id, pattern = data[0], data[1]
         anime_name = data[6] or data[1]
-
         final_dir = get_final_dir()
-        matches = [f for f in os.listdir(final_dir) if f.lower().endswith((".mkv", ".mp4")) and matches_pattern(f, pattern)] if os.path.exists(final_dir) else []
-        
-        if not matches:
-            self.log(f"Nenhum arquivo local para '{anime_name}'. Flag limpa.", "yellow")
-            run_async(clear_new_episode_flag(anime_id), on_done=lambda _: self._refresh_table())
-            return
 
-        WatchedSelectorDialog(
-            self, anime_id, pattern, anime_name, matches, 
-            self.log, self._refresh_table
-        )
+        def _scan():
+            if not os.path.exists(final_dir):
+                return []
+            return [f for f in os.listdir(final_dir)
+                    if f.lower().endswith((".mkv", ".mp4")) and matches_pattern(f, pattern)]
+
+        def on_scanned(result):
+            if isinstance(result, Exception):
+                result = []
+            if not result:
+                self.log(f"Nenhum arquivo local para '{anime_name}'. Flag limpa.", "yellow")
+                run_async(clear_new_episode_flag(anime_id), on_done=lambda _: self._refresh_table())
+                return
+            WatchedSelectorDialog(
+                self, anime_id, pattern, anime_name, result,
+                self.log, self._refresh_table
+            )
+
+        run_async(asyncio.to_thread(_scan), on_done=on_scanned)
 
     def _action_delete(self):
         selected = self.tree.selection()

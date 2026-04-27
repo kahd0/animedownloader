@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import tkinter as tk
@@ -6,6 +7,7 @@ from PIL import Image, ImageTk, ImageDraw
 from ...core.config import STATUS_COLORS, STATUS_PT, COVER_W, COVER_H, COVERS_DIR, VERSION
 from ...core.downloader import download_cover, check_subtitle_status, open_path, matches_pattern, get_final_dir
 from ...utils.async_bridge import run_async
+from ...utils.episode_parser import extract_episode_number
 
 class AnimeSidebar(tk.Frame):
     def __init__(self, parent, **kwargs):
@@ -114,32 +116,39 @@ class AnimeSidebar(tk.Frame):
 
     def refresh_sub_status(self, pattern):
         final_dir = get_final_dir()
-        if not os.path.exists(final_dir): return
-        
         video_exts = (".mkv", ".mp4", ".avi")
-        def ep_sort(name):
-            m = re.search(r'S\d+E(\d+)', name, re.I) or re.search(r'[\s-]0?(\d+)[\s(]', name)
-            return int(m.group(1)) if m else 0
-            
-        matches = sorted([f for f in os.listdir(final_dir) if f.lower().endswith(video_exts) and matches_pattern(f, pattern)], key=ep_sort)
-        if not matches:
-            self.sidebar_sub_status.config(text="Sem episódios locais", fg="#555555")
-            return
-            
-        video_path = os.path.join(final_dir, matches[-1])
-        status = check_subtitle_status(video_path)
-        if status["embedded"] and status["external"]:
-            langs = ", ".join(status["embedded_langs"])
-            text, color = f"✓ Embutida ({langs}) + externa", "#4caf50"
-        elif status["embedded"]:
-            langs = ", ".join(status["embedded_langs"]) or "?"
-            text, color = f"✓ Embutida ({langs})", "#4caf50"
-        elif status["external"]: 
-            text, color = f"✓ {status['external']}", "#4caf50"
-        else: 
-            text, color = "⚠ Sem legenda", "#ff9800"
-            
-        self.sidebar_sub_status.config(text=text, fg=color)
+
+        def _scan_and_check():
+            if not os.path.exists(final_dir):
+                return None
+            files = [
+                f for f in os.listdir(final_dir)
+                if f.lower().endswith(video_exts) and matches_pattern(f, pattern)
+            ]
+            if not files:
+                return None
+            latest = sorted(files, key=lambda n: extract_episode_number(n) or 0)[-1]
+            return check_subtitle_status(os.path.join(final_dir, latest))
+
+        def on_done(result):
+            if self._current_pattern != pattern:
+                return
+            if result is None or isinstance(result, Exception):
+                self.sidebar_sub_status.config(text="Sem episódios locais", fg="#555555")
+                return
+            if result["embedded"] and result["external"]:
+                langs = ", ".join(result["embedded_langs"])
+                text, color = f"✓ Embutida ({langs}) + externa", "#4caf50"
+            elif result["embedded"]:
+                langs = ", ".join(result["embedded_langs"]) or "?"
+                text, color = f"✓ Embutida ({langs})", "#4caf50"
+            elif result["external"]:
+                text, color = f"✓ {result['external']}", "#4caf50"
+            else:
+                text, color = "⚠ Sem legenda", "#ff9800"
+            self.sidebar_sub_status.config(text=text, fg=color)
+
+        run_async(asyncio.to_thread(_scan_and_check), on_done=on_done)
 
     def _on_cover_click(self, event=None):
         if not self._current_pattern: return

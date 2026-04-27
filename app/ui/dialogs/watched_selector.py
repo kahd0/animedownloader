@@ -1,11 +1,12 @@
+import asyncio
 import os
-import re
 import tkinter as tk
 from tkinter import ttk
 from ...core.downloader import get_final_dir, matches_pattern
 from ...core.database import set_last_episode, clear_new_episode_flag
 from ...core.config import should_delete_on_watched
 from ...utils.async_bridge import run_async
+from ...utils.episode_parser import extract_episode_number
 
 class WatchedSelectorDialog(tk.Toplevel):
     def __init__(self, parent, anime_id, pattern, anime_name, matches, log_callback, refresh_callback):
@@ -34,8 +35,7 @@ class WatchedSelectorDialog(tk.Toplevel):
         self.geometry(f"+{x}+{y}")
 
     def _extract_ep_num(self, filename):
-        m = re.search(r'S\d+E(\d+)', filename, re.I) or re.search(r'[\s-]0?(\d+)[\s(]', filename)
-        return int(m.group(1)) if m else 0
+        return extract_episode_number(filename) or 0
 
     def _build_ui(self):
         tk.Label(self, text="Selecione os episódios que você já assistiu:", 
@@ -86,48 +86,58 @@ class WatchedSelectorDialog(tk.Toplevel):
             self.destroy()
             return
 
-        # Descobrir o maior número de episódio marcado
-        max_watched = 0
-        files_to_delete = []
+        delete_on_watched = should_delete_on_watched()
         final_dir = get_final_dir()
+        anime_id = self.anime_id
+        log_cb = self.log_callback
+        refresh_cb = self.refresh_callback
 
-        for f in selected_files:
-            ep_num = self._extract_ep_num(f)
-            if ep_num > max_watched:
-                max_watched = ep_num
-            
-            files_to_delete.append(os.path.join(final_dir, f))
-            # Buscar legendas associadas
-            name_no_ext = os.path.splitext(f)[0]
-            for ext_file in os.listdir(final_dir):
-                if ext_file.startswith(name_no_ext) and ext_file.lower().endswith((".ass", ".srt")):
-                    files_to_delete.append(os.path.join(final_dir, ext_file))
+        async def do_all():
+            final_files = await asyncio.to_thread(os.listdir, final_dir)
 
-        # 1. Atualizar banco de dados
-        async def update_db():
-            await set_last_episode(self.anime_id, max_watched)
-            # Se não houver mais nada local não visto, podemos limpar a flag
-            # Por simplicidade, vamos limpar a flag se o usuário marcou qualquer coisa
-            await clear_new_episode_flag(self.anime_id)
-            
-        # 2. Deletar arquivos se configurado
-        if should_delete_on_watched():
+            max_watched = 0
+            files_to_delete = []
+            for f in selected_files:
+                ep_num = extract_episode_number(f) or 0
+                if ep_num > max_watched:
+                    max_watched = ep_num
+                files_to_delete.append(os.path.join(final_dir, f))
+                name_no_ext = os.path.splitext(f)[0]
+                for ext_file in final_files:
+                    if ext_file.startswith(name_no_ext) and ext_file.lower().endswith((".ass", ".srt")):
+                        files_to_delete.append(os.path.join(final_dir, ext_file))
+
+            await set_last_episode(anime_id, max_watched)
+            await clear_new_episode_flag(anime_id)
+
             deleted_count = 0
-            for path in files_to_delete:
-                try:
-                    if os.path.exists(path):
-                        os.remove(path)
-                        deleted_count += 1
-                except Exception as e:
-                    print(f"Erro ao deletar {path}: {e}")
-            if self.log_callback:
-                self.log_callback(f"Assistidos marcados. {deleted_count} arquivo(s) removidos.", "cyan")
-        else:
-            if self.log_callback:
-                self.log_callback(f"Assistidos marcados (arquivos mantidos). Novo status: Ep {max_watched}", "cyan")
+            if delete_on_watched:
+                for path in files_to_delete:
+                    try:
+                        if os.path.exists(path):
+                            await asyncio.to_thread(os.remove, path)
+                            deleted_count += 1
+                    except Exception as e:
+                        print(f"Erro ao deletar {path}: {e}")
 
-        def on_done(_):
-            self.refresh_callback()
-            self.destroy()
+            return max_watched, deleted_count
 
-        run_async(update_db(), on_done=on_done)
+        def on_done(result):
+            if isinstance(result, Exception):
+                if log_cb:
+                    log_cb("Erro ao marcar como visto.", "red")
+            else:
+                max_watched, deleted_count = result
+                if delete_on_watched:
+                    if log_cb:
+                        log_cb(f"Assistidos marcados. {deleted_count} arquivo(s) removidos.", "cyan")
+                else:
+                    if log_cb:
+                        log_cb(f"Assistidos marcados (arquivos mantidos). Novo status: Ep {max_watched}", "cyan")
+            refresh_cb()
+            try:
+                self.destroy()
+            except Exception:
+                pass
+
+        run_async(do_all(), on_done=on_done)
