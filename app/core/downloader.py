@@ -6,7 +6,7 @@ import subprocess
 import os
 import shutil
 import asyncio
-from .config import get_source_dir, get_final_dir, SUBS_TEMP_DIR, COVERS_DIR
+from .config import get_source_dir, get_final_dir, get_subs_dir, COVERS_DIR
 from .naming import smart_rename, matches_pattern
 from .database import get_monitored_animes, update_last_episode, update_anime_metadata
 from .api import (
@@ -198,7 +198,7 @@ async def organize_downloads():
                         print(f"Erro ao mover vídeo {filename}: {e}")
 
     # 2. Parear legendas com vídeos na pasta FINAL
-    if os.path.exists(SUBS_TEMP_DIR):
+    if os.path.exists(get_subs_dir()):
         for video_file in os.listdir(final_dir):
             if not video_file.lower().endswith((".mkv", ".mp4", ".avi")): continue
             
@@ -214,10 +214,10 @@ async def organize_downloads():
             has_sub = any(video_name_no_ext in f and f.lower().endswith((".ass", ".srt")) for f in os.listdir(final_dir))
             if has_sub: continue
 
-            for sub_file in os.listdir(SUBS_TEMP_DIR):
+            for sub_file in os.listdir(get_subs_dir()):
                 if f"_ep{ep_num}" in sub_file.lower():
                     sub_ext = os.path.splitext(sub_file)[1]
-                    old_sub_path = os.path.join(SUBS_TEMP_DIR, sub_file)
+                    old_sub_path = os.path.join(get_subs_dir(), sub_file)
                     new_sub_path = os.path.join(final_dir, f"{video_name_no_ext}{sub_ext}")
                     try:
                         shutil.move(old_sub_path, new_sub_path)

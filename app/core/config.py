@@ -43,8 +43,31 @@ def get_source_dir():
 def get_final_dir():
     return get_setting("organize_path", os.path.join(BASE_DIR, "episodes"))
 
+def get_subs_dir():
+    return get_setting("subs_path", os.path.join(BASE_DIR, "legendas"))
+
+def get_default_resolution():
+    return get_setting("default_res", "1080p")
+
+def get_check_interval():
+    # Retorna em milissegundos
+    try:
+        minutes = int(get_setting("check_interval", "10"))
+        return minutes * 60 * 1000
+    except:
+        return 10 * 60 * 1000
+
+def is_auto_organize_enabled():
+    return get_setting("auto_organize", "True") == "True"
+
+def should_delete_on_watched():
+    return get_setting("delete_on_watched", "True") == "True"
+
 # Inicializa o cache
 load_settings_sync()
+
+# Atualiza as constantes dinâmicas
+SUBS_TEMP_DIR = get_subs_dir()
 
 # UI Constants
 STATUS_COLORS = {

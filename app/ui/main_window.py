@@ -5,7 +5,8 @@ from tkinter import ttk, messagebox
 from datetime import datetime
 
 from ..core.config import (
-    STATUS_PT, get_final_dir, VERSION, GITHUB_REPO
+    STATUS_PT, get_final_dir, VERSION, GITHUB_REPO,
+    get_check_interval, is_auto_organize_enabled
 )
 from ..core.database import (
     init_db, get_monitored_animes, remove_anime,
@@ -31,6 +32,7 @@ from .dialogs.subtitle_selector import SubtitleQueueProcessor
 from .dialogs.anime_adder import AnimeAdderLogic
 from .dialogs.play_selector import PlaySelectorDialog
 from .dialogs.confirm_clear import ConfirmClearDialog
+from .dialogs.watched_selector import WatchedSelectorDialog
 
 class AnimeMonitorApp(tk.Tk):
     def __init__(self):
@@ -45,6 +47,7 @@ class AnimeMonitorApp(tk.Tk):
         self._anime_data: dict = {}
         self._suggest_after_id = None
         self._suggest_popup = None
+        self._periodic_refresh_id = None
 
         self._build_ui()
         self._apply_custom_styles()
@@ -56,7 +59,7 @@ class AnimeMonitorApp(tk.Tk):
         run_async(init_db(), on_done=lambda _: run_async(
             self._load_table_async(), on_done=self._on_table_loaded
         ))
-        self.after(600_000, self._periodic_refresh)
+        self.update_check_timer()
         self.after(500, self._action_refresh)
         self.after(2000, self._check_app_updates)
 
@@ -158,6 +161,21 @@ class AnimeMonitorApp(tk.Tk):
             status_raw = anime[7] or ""
             status_pt = STATUS_PT.get(status_raw, status_raw or "—")
             has_new = bool(anime[8])
+            
+            # Calcular maior episódio local
+            watched_ep = anime[2]
+            local_max = watched_ep
+            pattern = anime[1].lower()
+            final_dir = get_final_dir()
+            if os.path.exists(final_dir):
+                for f in os.listdir(final_dir):
+                    if f.lower().endswith((".mkv", ".mp4")) and matches_pattern(f, pattern):
+                        m = re.search(r'S\d+E(\d+)', f, re.I) or re.search(r'[\s-]0?(\d+)[\s(]', f)
+                        if m:
+                            num = int(m.group(1))
+                            if num > local_max: local_max = num
+            
+            ep_display = f"{watched_ep} / {local_max}" if local_max > watched_ep else str(watched_ep)
 
             tags = []
             if status_raw == "Currently Airing": tags.append("airing")
@@ -167,7 +185,7 @@ class AnimeMonitorApp(tk.Tk):
 
             self.tree.insert("", tk.END, iid=iid, tags=tags, values=[
                 str(anime[0]), ("🔥 " if has_new else "") + display_title,
-                str(anime[2]), str(anime[3]), anime[4] or "—", status_pt,
+                ep_display, str(anime[3]), anime[4] or "—", status_pt,
             ])
 
     def _refresh_table(self):
@@ -233,7 +251,10 @@ class AnimeMonitorApp(tk.Tk):
             if result and not isinstance(result, Exception):
                 for item in result: self.log(f"DOWNLOAD INICIADO: {item}", "green")
                 self._refresh_table()
-            self._action_organize()
+            
+            if is_auto_organize_enabled():
+                self._action_organize()
+                
         run_async(check_for_updates(), on_done=on_done)
 
     def _action_organize(self):
@@ -266,14 +287,21 @@ class AnimeMonitorApp(tk.Tk):
         iid = selected[0]
         data = self._anime_data.get(iid)
         if not data: return
-        pattern = data[1]
+        anime_id, pattern = data[0], data[1]
+        anime_name = data[6] or data[1]
+
         final_dir = get_final_dir()
-        matches = [f for f in os.listdir(final_dir) if matches_pattern(f, pattern)] if os.path.exists(final_dir) else []
-        files_to_delete = [os.path.join(final_dir, f) for f in matches]
-        if not files_to_delete:
-            run_async(clear_new_episode_flag(data[0]), on_done=lambda _: self._refresh_table())
+        matches = [f for f in os.listdir(final_dir) if f.lower().endswith((".mkv", ".mp4")) and matches_pattern(f, pattern)] if os.path.exists(final_dir) else []
+        
+        if not matches:
+            self.log(f"Nenhum arquivo local para '{anime_name}'. Flag limpa.", "yellow")
+            run_async(clear_new_episode_flag(anime_id), on_done=lambda _: self._refresh_table())
             return
-        ConfirmClearDialog(self, data[0], pattern, files_to_delete, len(matches), self.log, self._refresh_table)
+
+        WatchedSelectorDialog(
+            self, anime_id, pattern, anime_name, matches, 
+            self.log, self._refresh_table
+        )
 
     def _action_delete(self):
         selected = self.tree.selection()
@@ -356,9 +384,16 @@ class AnimeMonitorApp(tk.Tk):
         menu.add_command(label="🗑 Remover da Lista", command=self._action_delete)
         menu.tk_popup(event.x_root, event.y_root)
 
+    def update_check_timer(self):
+        if self._periodic_refresh_id:
+            self.after_cancel(self._periodic_refresh_id)
+        
+        interval = get_check_interval()
+        self._periodic_refresh_id = self.after(interval, self._periodic_refresh)
+
     def _periodic_refresh(self):
         self._action_refresh()
-        self.after(600_000, self._periodic_refresh)
+        self.update_check_timer()
 
     def _on_close(self):
         stop_loop(); self.destroy()

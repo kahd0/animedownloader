@@ -2,7 +2,7 @@ import httpx
 import re
 import lzma
 import os
-from .config import API_URL, SEARCH_URL, ANIMETOSHO_API, JIKAN_API, SUBS_TEMP_DIR
+from .config import API_URL, SEARCH_URL, ANIMETOSHO_API, JIKAN_API, get_subs_dir
 
 async def check_for_app_updates(repo):
     """Verifica se há uma nova versão no GitHub releases."""
@@ -112,9 +112,10 @@ async def download_chosen_subtitle(sub, series_name, ep_str):
             resp.raise_for_status()
             data = lzma.decompress(resp.content)
         ext = sub['info'].get('codec', 'ass').lower()
-        os.makedirs(SUBS_TEMP_DIR, exist_ok=True)
+        subs_dir = get_subs_dir()
+        os.makedirs(subs_dir, exist_ok=True)
         safe = re.sub(r'[^\w\s-]', '', series_name).strip().lower()
-        filename = os.path.join(SUBS_TEMP_DIR, f"{safe}_ep{ep_str}.{ext}")
+        filename = os.path.join(subs_dir, f"{safe}_ep{ep_str}.{ext}")
         with open(filename, 'wb') as f:
             f.write(data)
         return filename

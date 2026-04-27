@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
+from ...core.config import get_default_resolution
 from ...core.api import search_anime_history, fetch_anime_metadata
 from ...core.database import add_anime, update_anime_metadata, get_monitored_animes
 from ...core.downloader import process_releases
@@ -110,7 +111,7 @@ class AnimeAdderLogic:
                 # Trigger a global check
                 self.parent.after(100, lambda: self.parent._action_refresh())
                 
-        run_async(add_anime(name, start_episode=start_ep), on_done=on_added)
+        run_async(add_anime(name, resolution=get_default_resolution(), start_episode=start_ep), on_done=on_added)
 
     def _fetch_metadata_for(self, title_pattern: str):
         async def _task():
