@@ -31,14 +31,15 @@ async def fetch_anime_metadata(title_pattern):
         try:
             resp = await client.get(
                 f"{JIKAN_API}/anime",
-                params={"q": title_pattern, "limit": 1},
+                params={"q": title_pattern, "limit": 8},
                 timeout=10,
             )
             resp.raise_for_status()
             data = resp.json().get("data", [])
             if not data:
                 return None
-            item = data[0]
+            # Prefer currently airing entry so S2 isn't replaced by S1's metadata
+            item = next((d for d in data if d.get("status") == "Currently Airing"), data[0])
             return {
                 "official_title": item.get("title_english") or item.get("title"),
                 "cover_url": item.get("images", {}).get("jpg", {}).get("large_image_url"),
@@ -64,16 +65,16 @@ async def find_subtitles(show_name, ep_num):
                     continue
                 
                 for entry in data[:10]:
-                    if not entry or not re.search(rf'(\s|-)0?{int(ep_num)}(\D|$)', entry.get('title', '')):
+                    if not entry or not re.search(rf'(\s|-|[Ee])0?{int(ep_num)}(\D|$)', entry.get('title', '')):
                         continue
-                    
+
                     det_resp = await client.get(ANIMETOSHO_API, params={"show": "torrent", "id": entry['id']})
                     det_data = det_resp.json()
                     if not det_data or not isinstance(det_data, dict):
                         continue
-                        
+
                     for f in det_data.get('files', []):
-                        if not f or not re.search(rf'(\s|-)0?{int(ep_num)}(\D|$)', f.get('filename', '')):
+                        if not f or not re.search(rf'(\s|-|[Ee])0?{int(ep_num)}(\D|$)', f.get('filename', '')):
                             continue
                         for a in f.get('attachments', []):
                             if a.get('type') == 'subtitle' and a.get('id') and a['id'] not in seen_ids:

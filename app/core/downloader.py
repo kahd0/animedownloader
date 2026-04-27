@@ -78,6 +78,81 @@ async def get_subtitle_candidates():
         })
     return candidates
 
+def _matches_pattern(filename, pattern):
+    """Match filename against pattern tolerating season suffixes and punctuation differences.
+
+    smart_rename strips the season marker ("S2") from the filename, so
+    "Tsue to Tsurugi no Wistoria S2" would never match
+    "Tsue to Tsurugi no Wistoria - S02E01.mkv" with a plain `in` check.
+    """
+    fl = filename.lower()
+    pl = pattern.lower()
+
+    if pl in fl:
+        return True
+
+    # Strip trailing season marker ("Show S2" → "Show", "Show 2nd Season" → "Show")
+    stripped = re.sub(
+        r'\s*(?:[-–]\s*)?(?:\d+(?:st|nd|rd|th)\s+season|season\s+\d+|(?<!\w)s\d+)$',
+        '', pl
+    ).strip()
+    if stripped and stripped != pl and stripped in fl:
+        return True
+
+    # Normalize punctuation (": " / "' " → space) for both sides and retry
+    def norm(s):
+        return re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', s)).strip()
+
+    np = norm(stripped or pl)
+    if np and np in norm(fl):
+        return True
+
+    return False
+
+async def get_subtitle_candidates_for_anime(pattern):
+    """Busca candidatos de legenda para todos os eps sem legenda de um anime.
+
+    Searches both FINAL_DIR and SOURCE_DIR so that episodes which finished
+    downloading but haven't been organized yet are also covered.
+    """
+    video_exts = (".mkv", ".mp4", ".avi")
+    seen_eps: set[int] = set()
+    candidates = []
+
+    for search_dir in (FINAL_DIR, SOURCE_DIR):
+        if not os.path.exists(search_dir):
+            continue
+
+        videos = sorted(
+            f for f in os.listdir(search_dir)
+            if f.lower().endswith(video_exts) and _matches_pattern(f, pattern)
+        )
+
+        for video_file in videos:
+            m = re.search(r'[Ss]\d+[Ee](\d+)', video_file) or re.search(r'(?:[\s-])0?(\d+)(?:\D|$)', video_file)
+            if not m:
+                continue
+            ep_num = int(m.group(1))
+            if ep_num in seen_eps:
+                continue
+            seen_eps.add(ep_num)
+
+            status = check_subtitle_status(os.path.join(search_dir, video_file))
+            has_pt = "por" in (status.get("embedded_langs") or [])
+            if status["external"] or has_pt:
+                continue
+
+            subs, series_name, ep_str = await find_subtitles(pattern, ep_num)
+            candidates.append({
+                "pattern":     pattern,
+                "last_ep":     ep_num,
+                "subs":        subs,
+                "series_name": series_name,
+                "ep_str":      ep_str,
+            })
+
+    return candidates
+
 def check_subtitle_status(video_path):
     """Verifica legendas externas e embutidas (via ffprobe) de um arquivo de vídeo."""
     import json as _json

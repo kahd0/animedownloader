@@ -14,7 +14,8 @@ from ..core.downloader import (
     check_for_updates, search_subsplease_shows, process_releases,
     organize_downloads, force_download_subs, open_path,
     download_cover, get_subtitle_candidates, download_chosen_subtitle,
-    check_subtitle_status, refresh_single_metadata, refresh_all_metadata
+    check_subtitle_status, refresh_single_metadata, refresh_all_metadata,
+    get_subtitle_candidates_for_anime,
 )
 from ..core.api import search_anime_history, find_subtitles
 from ..utils.async_bridge import run_async, set_app_ref, stop_loop
@@ -638,13 +639,7 @@ class AnimeMonitorApp(tk.Tk):
         if iid == self._current_sidebar_iid: self.sidebar_sub_status.config(text=text, fg=color)
 
     def _action_download_subs(self):
-        self.log("Buscando legendas disponíveis...", "blue")
-        def on_candidates(result):
-            if isinstance(result, Exception):
-                self.log(f"Erro ao buscar legendas: {result}", "red")
-                return
-            self._process_subtitle_candidates(result)
-        run_async(get_subtitle_candidates(), on_done=on_candidates)
+        self._action_force_sub_selected()
 
     def _process_subtitle_candidates(self, candidates):
         if not candidates:
@@ -671,29 +666,69 @@ class AnimeMonitorApp(tk.Tk):
         self._subtitle_selection_queue(queue, index + 1)
 
     def _show_subtitle_selector(self, pattern, ep_num, subs):
-        dialog = tk.Toplevel(self); dialog.title(f"{pattern} — Ep {ep_num}"); dialog.configure(bg="#1e1e1e")
-        h = min(120 + len(subs) * 52, 520); self._center_dialog(dialog, 500, h)
-        tk.Label(dialog, text=f"{len(subs)} legendas disponíveis para:\n{pattern} — Ep {ep_num}", bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10, "bold"), justify=tk.CENTER).pack(pady=(14, 8))
-        selected_var = tk.IntVar(value=0)
-        sub_frame = tk.Frame(dialog, bg="#1e1e1e"); sub_frame.pack(fill=tk.BOTH, expand=True, padx=14)
-        lang_flags = {"por": "🇧🇷 PT", "eng": "🇬🇧 EN", "spa": "🇪🇸 ES"}
-        for i, sub in enumerate(subs):
-            info, filename = sub.get("info", {}), sub.get("filename", f"Legenda {i + 1}")
-            lang, desc, codec = info.get("lang", "unk"), info.get("desc", ""), info.get("codec", "ass")
-            lang_str = lang_flags.get(lang, lang.upper())
-            row = tk.Frame(sub_frame, bg="#2a2a2a"); row.pack(fill=tk.X, pady=2)
-            tk.Radiobutton(row, variable=selected_var, value=i, bg="#2a2a2a", activebackground="#2a2a2a", selectcolor="#1565c0", fg="#ffffff").pack(side=tk.LEFT, padx=6)
-            info_col = tk.Frame(row, bg="#2a2a2a"); info_col.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=5)
-            name_text = filename if len(filename) <= 58 else filename[:55] + "…"
-            tk.Label(info_col, text=name_text, bg="#2a2a2a", fg="#ffffff", font=("Segoe UI", 9), anchor=tk.W).pack(anchor=tk.W)
-            tk.Label(info_col, text=f"{lang_str}  •  {desc}" if desc else lang_str, bg="#2a2a2a", fg="#888888", font=("Segoe UI", 8), anchor=tk.W).pack(anchor=tk.W)
+        dialog = tk.Toplevel(self)
+        dialog.title(f"{pattern} — Ep {ep_num}")
+        dialog.configure(bg="#1e1e1e")
+        self._center_dialog(dialog, 520, 460)
+
+        tk.Label(dialog, text=f"{len(subs)} legendas disponíveis para:\n{pattern} — Ep {ep_num}",
+                 bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10, "bold"), justify=tk.CENTER
+                 ).pack(pady=(14, 8))
 
         chosen = {"sub": None}
+        selected_var = tk.IntVar(value=0)
+
+        # Buttons packed first so they always get space at the bottom
+        btn_frame = tk.Frame(dialog, bg="#1e1e1e")
+        btn_frame.pack(side=tk.BOTTOM, pady=10)
         def confirm(): chosen["sub"] = subs[selected_var.get()]; dialog.destroy()
-        btn_frame = tk.Frame(dialog, bg="#1e1e1e"); btn_frame.pack(pady=10)
         ttk.Button(btn_frame, text="Baixar Selecionada", command=confirm).pack(side=tk.LEFT, padx=8)
         ttk.Button(btn_frame, text="Pular", command=dialog.destroy).pack(side=tk.LEFT, padx=8)
-        dialog.wait_window(); return chosen["sub"]
+
+        # Scrollable subtitle list
+        container = tk.Frame(dialog, bg="#1e1e1e")
+        container.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 4))
+
+        canvas = tk.Canvas(container, bg="#1e1e1e", bd=0, highlightthickness=0)
+        vsb = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        inner = tk.Frame(canvas, bg="#1e1e1e")
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
+
+        lang_flags = {"por": "🇧🇷 PT-BR", "eng": "🇬🇧 EN", "spa": "🇪🇸 ES"}
+        for i, sub in enumerate(subs):
+            info = sub.get("info", {})
+            filename = sub.get("filename", f"Legenda {i + 1}")
+            lang = info.get("lang", "unk")
+            desc = info.get("desc", "")
+            lang_str = lang_flags.get(lang, lang.upper())
+
+            is_br = lang == "por" and "forced" not in desc.lower() and "cc" not in desc.lower()
+            row_bg  = "#1a3a20" if is_br else "#2a2a2a"
+            fg_main = "#90ee90" if is_br else "#ffffff"
+            fg_detail = "#4caf50" if is_br else "#888888"
+
+            row = tk.Frame(inner, bg=row_bg)
+            row.pack(fill=tk.X, pady=2)
+            tk.Radiobutton(row, variable=selected_var, value=i, bg=row_bg,
+                           activebackground=row_bg, selectcolor="#1565c0", fg=fg_main
+                           ).pack(side=tk.LEFT, padx=6)
+            info_col = tk.Frame(row, bg=row_bg)
+            info_col.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=5)
+            name_text = filename if len(filename) <= 58 else filename[:55] + "…"
+            tk.Label(info_col, text=name_text, bg=row_bg, fg=fg_main,
+                     font=("Segoe UI", 9), anchor=tk.W).pack(anchor=tk.W)
+            detail = ("★ " if is_br else "") + (f"{lang_str}  •  {desc}" if desc else lang_str)
+            tk.Label(info_col, text=detail, bg=row_bg, fg=fg_detail,
+                     font=("Segoe UI", 8), anchor=tk.W).pack(anchor=tk.W)
+
+        dialog.wait_window()
+        return chosen["sub"]
 
     def _on_sub_downloaded(self, path, pattern, ep_str):
         if path and not isinstance(path, Exception):
@@ -729,22 +764,27 @@ class AnimeMonitorApp(tk.Tk):
 
     def _action_force_sub_selected(self):
         selected = self.tree.selection()
-        if not selected: return
+        if not selected:
+            self.log("Selecione um anime para buscar legenda.", "red")
+            return
         iid = selected[0]
         data = self._anime_data.get(iid)
-        if not data: return
-        pattern, last_ep = data[1], data[2]
-        if last_ep <= 0: self.log(f"Nenhum episódio registrado para '{pattern}'.", "yellow"); return
-        self.log(f"Buscando legenda: {pattern} - Ep {last_ep}...", "blue")
+        if not data:
+            return
+        pattern = data[1]
+        name = data[6] or pattern
+        self.log(f"Verificando episódios sem legenda: {name}...", "blue")
+
         def on_candidates(result):
-            if isinstance(result, Exception): self.log(f"Erro ao buscar legenda: {result}", "red"); return
-            subs, series_name, ep_str = result
-            if not subs: self.log(f"Legenda não encontrada: {pattern} - Ep {last_ep}", "yellow"); return
-            if len(subs) == 1: run_async(download_chosen_subtitle(subs[0], series_name, ep_str), on_done=lambda path: self._on_sub_downloaded(path, pattern, ep_str))
-            else:
-                chosen = self._show_subtitle_selector(pattern, last_ep, subs)
-                if chosen: run_async(download_chosen_subtitle(chosen, series_name, ep_str), on_done=lambda path: self._on_sub_downloaded(path, pattern, ep_str))
-        run_async(find_subtitles(pattern, last_ep), on_done=on_candidates)
+            if isinstance(result, Exception):
+                self.log(f"Erro ao buscar legendas: {result}", "red")
+                return
+            if not result:
+                self.log(f"Nenhum episódio sem legenda encontrado para '{name}'.", "yellow")
+                return
+            self._process_subtitle_candidates(result)
+
+        run_async(get_subtitle_candidates_for_anime(pattern), on_done=on_candidates)
 
     def _add_anime(self):
         raw = self.entry.get().strip()
