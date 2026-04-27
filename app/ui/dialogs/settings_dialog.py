@@ -5,10 +5,13 @@ from tkinter import ttk, filedialog, messagebox
 from ...core.config import (
     get_setting, get_final_dir, get_subs_dir, 
     get_default_resolution, is_auto_organize_enabled, 
-    should_delete_on_watched, load_settings_sync
+    should_delete_on_watched, load_settings_sync,
+    VERSION, GITHUB_REPO
 )
 from ...core.database import set_setting, get_monitored_animes, import_animes
+from ...core.api import check_for_app_updates
 from ...utils.async_bridge import run_async
+from ...utils.updater import download_file, apply_update_and_restart
 
 class SettingsDialog(tk.Toplevel):
     def __init__(self, parent, log_callback):
@@ -31,87 +34,9 @@ class SettingsDialog(tk.Toplevel):
         self.geometry(f"+{x}+{y}")
 
     def _build_ui(self):
-        # Container com scroll se necessário
-        main_frame = tk.Frame(self, bg="#2b2b2b")
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
-
-        def browse_folder(var):
-            path = filedialog.askdirectory()
-            if path:
-                var.set(path)
-
-        # --- SEÇÃO DE PASTAS ---
-        tk.Label(main_frame, text="Pastas", bg="#2b2b2b", fg="#4caf50", font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, pady=(0, 10))
-
-        # Download Path
-        tk.Label(main_frame, text="Pasta de Downloads (Monitorada):", bg="#2b2b2b", fg="#ffffff").pack(anchor=tk.W)
-        dl_var = tk.StringVar(value=get_setting("download_path", os.path.join(os.path.expanduser("~"), "Downloads", "Torrents")))
-        dl_frame = tk.Frame(main_frame, bg="#2b2b2b")
-        dl_frame.pack(fill=tk.X, pady=(5, 15))
-        tk.Entry(dl_frame, textvariable=dl_var, bg="#1e1e1e", fg="#ffffff", insertbackground="white").pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(dl_frame, text="Procurar...", command=lambda: browse_folder(dl_var)).pack(side=tk.LEFT, padx=(5, 0))
-
-        # Organize Path
-        tk.Label(main_frame, text="Pasta Final (Organizada):", bg="#2b2b2b", fg="#ffffff").pack(anchor=tk.W)
-        final_var = tk.StringVar(value=get_final_dir())
-        final_frame = tk.Frame(main_frame, bg="#2b2b2b")
-        final_frame.pack(fill=tk.X, pady=(5, 15))
-        tk.Entry(final_frame, textvariable=final_var, bg="#1e1e1e", fg="#ffffff", insertbackground="white").pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(final_frame, text="Procurar...", command=lambda: browse_folder(final_var)).pack(side=tk.LEFT, padx=(5, 0))
-
-        # Subs Path
-        tk.Label(main_frame, text="Pasta de Legendas Temporárias:", bg="#2b2b2b", fg="#ffffff").pack(anchor=tk.W)
-        subs_var = tk.StringVar(value=get_subs_dir())
-        subs_frame = tk.Frame(main_frame, bg="#2b2b2b")
-        subs_frame.pack(fill=tk.X, pady=(5, 15))
-        tk.Entry(subs_frame, textvariable=subs_var, bg="#1e1e1e", fg="#ffffff", insertbackground="white").pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(subs_frame, text="Procurar...", command=lambda: browse_folder(subs_var)).pack(side=tk.LEFT, padx=(5, 0))
-
-        ttk.Separator(main_frame, orient="horizontal").pack(fill=tk.X, pady=10)
-
-        # --- SEÇÃO DE PREFERÊNCIAS ---
-        tk.Label(main_frame, text="Preferências", bg="#2b2b2b", fg="#4caf50", font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, pady=(0, 10))
-
-        # Resolução Padrão
-        res_frame = tk.Frame(main_frame, bg="#2b2b2b")
-        res_frame.pack(fill=tk.X, pady=5)
-        tk.Label(res_frame, text="Resolução Padrão:", bg="#2b2b2b", fg="#ffffff").pack(side=tk.LEFT)
-        res_var = tk.StringVar(value=get_default_resolution())
-        res_combo = ttk.Combobox(res_frame, textvariable=res_var, values=["1080p", "720p", "480p"], width=10, state="readonly")
-        res_combo.pack(side=tk.LEFT, padx=10)
-
-        # Intervalo de Verificação
-        int_frame = tk.Frame(main_frame, bg="#2b2b2b")
-        int_frame.pack(fill=tk.X, pady=5)
-        tk.Label(int_frame, text="Intervalo de Verificação (minutos):", bg="#2b2b2b", fg="#ffffff").pack(side=tk.LEFT)
-        interval_var = tk.StringVar(value=get_setting("check_interval", "10"))
-        interval_spin = ttk.Spinbox(int_frame, from_=1, to=1440, textvariable=interval_var, width=10)
-        interval_spin.pack(side=tk.LEFT, padx=10)
-
-        # Auto-Organizar
-        auto_org_var = tk.BooleanVar(value=is_auto_organize_enabled())
-        tk.Checkbutton(main_frame, text="Organizar automaticamente após baixar", 
-                       variable=auto_org_var, bg="#2b2b2b", fg="#ffffff", 
-                       selectcolor="#1e1e1e", activebackground="#2b2b2b", 
-                       activeforeground="#ffffff").pack(anchor=tk.W, pady=5)
-
-        # Deletar ao marcar visto
-        delete_watched_var = tk.BooleanVar(value=should_delete_on_watched())
-        tk.Checkbutton(main_frame, text="Excluir arquivos ao marcar como assistido", 
-                       variable=delete_watched_var, bg="#2b2b2b", fg="#ffffff", 
-                       selectcolor="#1e1e1e", activebackground="#2b2b2b", 
-                       activeforeground="#ffffff").pack(anchor=tk.W, pady=5)
-
-        ttk.Separator(main_frame, orient="horizontal").pack(fill=tk.X, pady=10)
-
-        # --- SEÇÃO DE BACKUP ---
-        tk.Label(main_frame, text="Dados e Backup", bg="#2b2b2b", fg="#4caf50", font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, pady=(0, 10))
-        
-        backup_frame = tk.Frame(main_frame, bg="#2b2b2b")
-        backup_frame.pack(fill=tk.X, pady=5)
-        
-        ttk.Button(backup_frame, text="📤 Exportar Lista (JSON)", command=self._export_data).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(backup_frame, text="📥 Importar Lista (JSON)", command=self._import_data).pack(side=tk.LEFT)
+        # Frame para o botão Salvar (fixo no rodapé)
+        footer_frame = tk.Frame(self, bg="#2b2b2b")
+        footer_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
 
         def save():
             async def do_save():
@@ -134,7 +59,136 @@ class SettingsDialog(tk.Toplevel):
                 self.destroy()
             run_async(do_save())
 
-        ttk.Button(self, text="Salvar", command=save).pack(pady=20)
+        ttk.Button(footer_frame, text="Salvar", command=save).pack()
+
+        # Container principal com scroll
+        container = tk.Frame(self, bg="#2b2b2b")
+        container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(container, bg="#2b2b2b", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        
+        main_frame = tk.Frame(canvas, bg="#2b2b2b")
+        
+        # Vincular scroll
+        main_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        window_id = canvas.create_window((0, 0), window=main_frame, anchor="nw")
+        
+        # Ajustar largura do frame interno à largura do canvas
+        def _on_canvas_configure(event):
+            canvas.itemconfig(window_id, width=event.width)
+        canvas.bind("<Configure>", _on_canvas_configure)
+        
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Suporte a Scroll do Mouse
+        def _on_mousewheel(event):
+            if canvas.winfo_exists():
+                if event.num == 4 or event.delta > 0:
+                    canvas.yview_scroll(-1, "units")
+                elif event.num == 5 or event.delta < 0:
+                    canvas.yview_scroll(1, "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        canvas.bind_all("<Button-4>", _on_mousewheel)
+        canvas.bind_all("<Button-5>", _on_mousewheel)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def browse_folder(var):
+            path = filedialog.askdirectory()
+            if path:
+                var.set(path)
+
+        # --- SEÇÃO DE PASTAS ---
+        tk.Label(main_frame, text="Pastas", bg="#2b2b2b", fg="#4caf50", font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, padx=20, pady=(10, 10))
+
+        # Download Path
+        tk.Label(main_frame, text="Pasta de Downloads (Monitorada):", bg="#2b2b2b", fg="#ffffff").pack(anchor=tk.W, padx=20)
+        dl_var = tk.StringVar(value=get_setting("download_path", os.path.join(os.path.expanduser("~"), "Downloads", "Torrents")))
+        dl_frame = tk.Frame(main_frame, bg="#2b2b2b")
+        dl_frame.pack(fill=tk.X, padx=20, pady=(5, 15))
+        tk.Entry(dl_frame, textvariable=dl_var, bg="#1e1e1e", fg="#ffffff", insertbackground="white").pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(dl_frame, text="Procurar...", command=lambda: browse_folder(dl_var)).pack(side=tk.LEFT, padx=(5, 0))
+
+        # Organize Path
+        tk.Label(main_frame, text="Pasta Final (Organizada):", bg="#2b2b2b", fg="#ffffff").pack(anchor=tk.W, padx=20)
+        final_var = tk.StringVar(value=get_final_dir())
+        final_frame = tk.Frame(main_frame, bg="#2b2b2b")
+        final_frame.pack(fill=tk.X, padx=20, pady=(5, 15))
+        tk.Entry(final_frame, textvariable=final_var, bg="#1e1e1e", fg="#ffffff", insertbackground="white").pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(final_frame, text="Procurar...", command=lambda: browse_folder(final_var)).pack(side=tk.LEFT, padx=(5, 0))
+
+        # Subs Path
+        tk.Label(main_frame, text="Pasta de Legendas Temporárias:", bg="#2b2b2b", fg="#ffffff").pack(anchor=tk.W, padx=20)
+        subs_var = tk.StringVar(value=get_subs_dir())
+        subs_frame = tk.Frame(main_frame, bg="#2b2b2b")
+        subs_frame.pack(fill=tk.X, padx=20, pady=(5, 15))
+        tk.Entry(subs_frame, textvariable=subs_var, bg="#1e1e1e", fg="#ffffff", insertbackground="white").pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(subs_frame, text="Procurar...", command=lambda: browse_folder(subs_var)).pack(side=tk.LEFT, padx=(5, 0))
+
+        ttk.Separator(main_frame, orient="horizontal").pack(fill=tk.X, padx=20, pady=10)
+
+        # --- SEÇÃO DE PREFERÊNCIAS ---
+        tk.Label(main_frame, text="Preferências", bg="#2b2b2b", fg="#4caf50", font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, padx=20, pady=(0, 10))
+
+        # Resolução Padrão
+        res_frame = tk.Frame(main_frame, bg="#2b2b2b")
+        res_frame.pack(fill=tk.X, padx=20, pady=5)
+        tk.Label(res_frame, text="Resolução Padrão:", bg="#2b2b2b", fg="#ffffff").pack(side=tk.LEFT)
+        res_var = tk.StringVar(value=get_default_resolution())
+        res_combo = ttk.Combobox(res_frame, textvariable=res_var, values=["1080p", "720p", "480p"], width=10, state="readonly")
+        res_combo.pack(side=tk.LEFT, padx=10)
+
+        # Intervalo de Verificação
+        int_frame = tk.Frame(main_frame, bg="#2b2b2b")
+        int_frame.pack(fill=tk.X, padx=20, pady=5)
+        tk.Label(int_frame, text="Intervalo de Verificação (minutos):", bg="#2b2b2b", fg="#ffffff").pack(side=tk.LEFT)
+        interval_var = tk.StringVar(value=get_setting("check_interval", "10"))
+        interval_spin = ttk.Spinbox(int_frame, from_=1, to=1440, textvariable=interval_var, width=10)
+        interval_spin.pack(side=tk.LEFT, padx=10)
+
+        # Auto-Organizar
+        auto_org_var = tk.BooleanVar(value=is_auto_organize_enabled())
+        tk.Checkbutton(main_frame, text="Organizar automaticamente após baixar", 
+                       variable=auto_org_var, bg="#2b2b2b", fg="#ffffff", 
+                       selectcolor="#1e1e1e", activebackground="#2b2b2b", 
+                       activeforeground="#ffffff").pack(anchor=tk.W, padx=20, pady=5)
+
+        # Deletar ao marcar visto
+        delete_watched_var = tk.BooleanVar(value=should_delete_on_watched())
+        tk.Checkbutton(main_frame, text="Excluir arquivos ao marcar como assistido", 
+                       variable=delete_watched_var, bg="#2b2b2b", fg="#ffffff", 
+                       selectcolor="#1e1e1e", activebackground="#2b2b2b", 
+                       activeforeground="#ffffff").pack(anchor=tk.W, padx=20, pady=5)
+
+        ttk.Separator(main_frame, orient="horizontal").pack(fill=tk.X, padx=20, pady=10)
+
+        # --- SEÇÃO DE BACKUP ---
+        tk.Label(main_frame, text="Dados e Backup", bg="#2b2b2b", fg="#4caf50", font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, padx=20, pady=(0, 10))
+        
+        backup_frame = tk.Frame(main_frame, bg="#2b2b2b")
+        backup_frame.pack(fill=tk.X, padx=20, pady=5)
+        
+        ttk.Button(backup_frame, text="📤 Exportar Lista (JSON)", command=self._export_data).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(backup_frame, text="📥 Importar Lista (JSON)", command=self._import_data).pack(side=tk.LEFT)
+
+        ttk.Separator(main_frame, orient="horizontal").pack(fill=tk.X, padx=20, pady=10)
+
+        # --- SEÇÃO DE ATUALIZAÇÃO ---
+        tk.Label(main_frame, text="Sobre e Atualizações", bg="#2b2b2b", fg="#4caf50", font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, padx=20, pady=(0, 10))
+        
+        info_frame = tk.Frame(main_frame, bg="#2b2b2b")
+        info_frame.pack(fill=tk.X, padx=20, pady=5)
+
+        tk.Label(info_frame, text=f"Versão Atual: {VERSION}", bg="#2b2b2b", fg="#ffffff").pack(side=tk.LEFT)
+        self._update_btn = ttk.Button(info_frame, text="🔍 Buscar Atualizações", command=self._check_updates)
+        self._update_btn.pack(side=tk.LEFT, padx=20)
 
     def _export_data(self):
         async def do_export():
@@ -193,3 +247,70 @@ class SettingsDialog(tk.Toplevel):
                 
         except Exception as e:
             messagebox.showerror("Erro na Importação", f"Não foi possível importar o arquivo:\n{e}")
+
+    def _check_updates(self):
+        import sys
+        self._update_btn.config(state="disabled", text="Verificando...")
+
+        def on_checked(update):
+            self._update_btn.config(state="normal", text="🔍 Buscar Atualizações")
+            if isinstance(update, Exception) or not update:
+                messagebox.showinfo("Atualização", "Não foi possível verificar. Tente mais tarde.")
+                return
+            if update["tag_name"] == VERSION:
+                messagebox.showinfo("Atualização", "Você já está na versão mais recente!")
+                return
+
+            body = (update.get("body") or "")[:300]
+            is_frozen = getattr(sys, "frozen", False)
+            has_asset = bool(update.get("asset_url")) and is_frozen
+
+            if has_asset:
+                choice = messagebox.askyesnocancel(
+                    "Nova Versão Disponível",
+                    f"Versão {update['tag_name']} disponível!\n\n"
+                    f"{body}\n\n"
+                    "Atualizar automaticamente? (o app será reiniciado)\n"
+                    "'Não' abre o navegador."
+                )
+                if choice is True:
+                    self._do_auto_update(update)
+                elif choice is False:
+                    import webbrowser
+                    webbrowser.open(update["html_url"])
+            else:
+                if messagebox.askyesno(
+                    "Nova Versão Disponível",
+                    f"Versão {update['tag_name']} disponível!\n\nAbrir página de download?"
+                ):
+                    import webbrowser
+                    webbrowser.open(update["html_url"])
+
+        run_async(check_for_app_updates(GITHUB_REPO), on_done=on_checked)
+
+    def _do_auto_update(self, update):
+        import tempfile
+        asset_url = update["asset_url"]
+        file_name = update.get("file_name", "anime_monitor_update")
+        tmp_path = os.path.join(tempfile.gettempdir(), file_name)
+
+        self._update_btn.config(state="disabled", text="Baixando...")
+        if self.log_callback:
+            self.log_callback(f"Baixando v{update['tag_name']}...", "blue")
+
+        def on_downloaded(ok):
+            if isinstance(ok, Exception) or not ok:
+                self._update_btn.config(state="normal", text="🔍 Buscar Atualizações")
+                messagebox.showerror("Erro no Download", "Falha ao baixar a atualização. Tente manualmente.")
+                return
+            if self.log_callback:
+                self.log_callback("Download concluído. Aplicando atualização...", "green")
+            if messagebox.askyesno(
+                "Pronto para Atualizar",
+                "Download concluído! O app será fechado e reiniciado automaticamente.\n\nContinuar?"
+            ):
+                apply_update_and_restart(tmp_path)
+            else:
+                self._update_btn.config(state="normal", text="🔍 Buscar Atualizações")
+
+        run_async(download_file(asset_url, tmp_path), on_done=on_downloaded)

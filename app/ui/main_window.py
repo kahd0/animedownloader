@@ -23,6 +23,7 @@ from ..core.downloader import (
 from ..core.api import check_for_app_updates
 from ..utils.async_bridge import run_async, set_app_ref, stop_loop
 from ..utils.episode_parser import extract_episode_number
+from ..utils.updater import download_file, apply_update_and_restart
 
 # Importação de Componentes e Diálogos
 from .styles import apply_styles
@@ -137,13 +138,47 @@ class AnimeMonitorApp(tk.Tk):
         self.activity_log.log(message, color)
 
     def _check_app_updates(self):
-        async def check():
-            update = await check_for_app_updates(GITHUB_REPO)
-            if update and update["tag_name"] != VERSION:
-                if messagebox.askyesno("Nova Versão disponível", f"Uma nova versão ({update['tag_name']}) disponível!\n\nDescarregar?"):
-                    import webbrowser
-                    webbrowser.open(update["html_url"])
-        run_async(check())
+        import sys
+
+        def on_checked(update):
+            if isinstance(update, Exception) or not update:
+                return
+            if update["tag_name"] == VERSION:
+                return
+
+            is_frozen = getattr(sys, "frozen", False)
+            has_asset = bool(update.get("asset_url")) and is_frozen
+
+            if has_asset:
+                if messagebox.askyesno(
+                    "Nova Versão Disponível",
+                    f"Versão {update['tag_name']} disponível!\nAtualizar automaticamente? (o app será reiniciado)"
+                ):
+                    self._apply_auto_update(update)
+                return
+
+            if messagebox.askyesno(
+                "Nova Versão Disponível",
+                f"Versão {update['tag_name']} disponível!\nAbrir página de download?"
+            ):
+                import webbrowser
+                webbrowser.open(update["html_url"])
+
+        run_async(check_for_app_updates(GITHUB_REPO), on_done=on_checked)
+
+    def _apply_auto_update(self, update):
+        import tempfile
+        tmp_path = os.path.join(tempfile.gettempdir(), update.get("file_name", "anime_monitor_update"))
+        self.log(f"Baixando atualização v{update['tag_name']}...", "blue")
+
+        def on_downloaded(ok):
+            if isinstance(ok, Exception) or not ok:
+                self.log("Falha no download da atualização.", "red")
+                return
+            self.log("Download concluído. Reiniciando...", "green")
+            apply_update_and_restart(tmp_path)
+
+        run_async(download_file(update["asset_url"], tmp_path), on_done=on_downloaded)
 
     async def _load_table_async(self):
         animes = await get_monitored_animes()

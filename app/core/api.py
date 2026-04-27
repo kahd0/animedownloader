@@ -5,17 +5,37 @@ import os
 from .config import API_URL, SEARCH_URL, ANIMETOSHO_API, JIKAN_API, get_subs_dir
 
 async def check_for_app_updates(repo):
-    """Verifica se há uma nova versão no GitHub releases."""
+    """Verifica se há uma nova versão e retorna info + link do asset correto."""
+    import platform
     async with httpx.AsyncClient() as client:
         try:
             url = f"https://api.github.com/repos/{repo}/releases/latest"
             resp = await client.get(url, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
+                version = data.get("tag_name")
+                
+                # Identificar qual arquivo baixar baseado no OS
+                asset_url = None
+                system = platform.system().lower()
+                
+                for asset in data.get("assets", []):
+                    name = asset.get("name", "").lower()
+                    if system == "windows" and name.endswith(".exe"):
+                        asset_url = asset.get("browser_download_url")
+                        break
+                    elif system == "linux" and ("linux" in name or name.endswith(".bin") or "." not in name.split('/')[-1]):
+                        # No linux geralmente o binário não tem extensão ou tem 'linux' no nome
+                        if "windows" not in name:
+                            asset_url = asset.get("browser_download_url")
+                            break
+
                 return {
-                    "tag_name": data.get("tag_name"),
+                    "tag_name": version,
                     "html_url": data.get("html_url"),
-                    "body": data.get("body")
+                    "body": data.get("body"),
+                    "asset_url": asset_url,
+                    "file_name": data.get("assets")[0].get("name") if data.get("assets") else "update"
                 }
         except Exception as e:
             print(f"Erro ao verificar atualizações: {e}")

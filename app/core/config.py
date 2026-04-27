@@ -1,8 +1,9 @@
 import os
+import sys
 
 # Versão do Aplicativo
 VERSION = "v1.0.1"
-GITHUB_REPO = "seu-usuario/seu-repositorio"
+GITHUB_REPO = "kahd0/animedownloader"
 
 # APIs
 API_URL = "https://subsplease.org/api/?f=latest&tz=UTC"
@@ -10,8 +11,13 @@ SEARCH_URL = "https://subsplease.org/api/?f=search&tz=UTC&s="
 ANIMETOSHO_API = "https://feed.animetosho.org/json"
 JIKAN_API = "https://api.jikan.moe/v4"
 
-# Caminhos Base fixos
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Quando compilado pelo PyInstaller (sys.frozen=True), __file__ aponta para o
+# diretório temporário de extração. Usa sys.executable para manter dados
+# persistentes (db, capas) ao lado do executável.
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 COVERS_DIR = os.path.join(BASE_DIR, "covers")
 DB_PATH = os.path.join(BASE_DIR, "anime_monitor.db")
 SUBS_TEMP_DIR = os.path.join(BASE_DIR, "legendas")
