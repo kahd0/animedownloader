@@ -1,12 +1,13 @@
 import os
+import json
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, messagebox
 from ...core.config import (
     get_setting, get_final_dir, get_subs_dir, 
     get_default_resolution, is_auto_organize_enabled, 
     should_delete_on_watched, load_settings_sync
 )
-from ...core.database import set_setting
+from ...core.database import set_setting, get_monitored_animes, import_animes
 from ...utils.async_bridge import run_async
 
 class SettingsDialog(tk.Toplevel):
@@ -101,6 +102,17 @@ class SettingsDialog(tk.Toplevel):
                        selectcolor="#1e1e1e", activebackground="#2b2b2b", 
                        activeforeground="#ffffff").pack(anchor=tk.W, pady=5)
 
+        ttk.Separator(main_frame, orient="horizontal").pack(fill=tk.X, pady=10)
+
+        # --- SEÇÃO DE BACKUP ---
+        tk.Label(main_frame, text="Dados e Backup", bg="#2b2b2b", fg="#4caf50", font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, pady=(0, 10))
+        
+        backup_frame = tk.Frame(main_frame, bg="#2b2b2b")
+        backup_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(backup_frame, text="📤 Exportar Lista (JSON)", command=self._export_data).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(backup_frame, text="📥 Importar Lista (JSON)", command=self._import_data).pack(side=tk.LEFT)
+
         def save():
             async def do_save():
                 await set_setting("download_path", dl_var.get())
@@ -123,3 +135,61 @@ class SettingsDialog(tk.Toplevel):
             run_async(do_save())
 
         ttk.Button(self, text="Salvar", command=save).pack(pady=20)
+
+    def _export_data(self):
+        async def do_export():
+            animes = await get_monitored_animes()
+            if not animes:
+                self.log_callback("Nenhum anime para exportar.", "yellow")
+                return
+            
+            # Converter lista de tuplas para lista de dicts
+            data = []
+            for a in animes:
+                data.append({
+                    "title_pattern": a[1],
+                    "last_episode": a[2],
+                    "resolution": a[3],
+                    "cover_url": a[5],
+                    "official_title": a[6],
+                    "airing_status": a[7]
+                })
+            
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json")],
+                initialfile="anime_list_backup.json"
+            )
+            
+            if file_path:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=4, ensure_ascii=False)
+                self.log_callback(f"Lista exportada com sucesso: {os.path.basename(file_path)}", "green")
+        
+        run_async(do_export())
+
+    def _import_data(self):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("JSON files", "*.json")]
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            if not isinstance(data, list):
+                raise ValueError("Formato de arquivo inválido.")
+
+            if messagebox.askyesno("Confirmar Importação", f"Deseja importar {len(data)} animes?"):
+                async def do_import():
+                    await import_animes(data)
+                    self.log_callback(f"{len(data)} animes importados com sucesso!", "green")
+                    if hasattr(self.parent, '_refresh_table'):
+                        self.parent._refresh_table()
+                run_async(do_import())
+                
+        except Exception as e:
+            messagebox.showerror("Erro na Importação", f"Não foi possível importar o arquivo:\n{e}")

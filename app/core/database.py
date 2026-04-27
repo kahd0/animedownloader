@@ -76,6 +76,28 @@ async def get_monitored_animes():
         ) as cursor:
             return await cursor.fetchall()
 
+async def import_animes(anime_list):
+    """Importa uma lista de dicionários contendo os dados dos animes."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        for anime in anime_list:
+            try:
+                await db.execute(
+                    """INSERT OR REPLACE INTO monitored 
+                       (title_pattern, last_episode, resolution, official_title, cover_url, airing_status) 
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        anime.get('title_pattern'),
+                        anime.get('last_episode', 0),
+                        anime.get('resolution', '1080p'),
+                        anime.get('official_title'),
+                        anime.get('cover_url'),
+                        anime.get('airing_status')
+                    )
+                )
+            except Exception as e:
+                print(f"Erro ao importar anime {anime.get('title_pattern')}: {e}")
+        await db.commit()
+
 async def update_last_episode(title_pattern, episode_num):
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
     async with aiosqlite.connect(DB_PATH) as db:
