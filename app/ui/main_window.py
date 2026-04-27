@@ -126,7 +126,7 @@ class AnimeMonitorApp(tk.Tk):
 
         # Log Component
         self.activity_log = ActivityLog(self, height=180)
-        self.activity_log.pack(fill=tk.BOTH, expand=False, padx=8, pady=(0, 8))
+        self.activity_log.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 8))
 
     def log(self, message: str, color: str = "white"):
         self.activity_log.log(message, color)

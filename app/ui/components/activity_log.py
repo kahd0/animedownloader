@@ -5,14 +5,16 @@ from ..styles import get_log_tags_colors
 
 class ActivityLog(tk.Frame):
     def __init__(self, parent, **kwargs):
-        super().__init__(parent, bg="#1e1e1e", **kwargs)
+        # Captura a altura se fornecida
+        height = kwargs.pop('height', 180)
+        super().__init__(parent, bg="#1e1e1e", height=height, **kwargs)
+        self.pack_propagate(False) # Força o frame a respeitar a altura definida
         
         tk.Label(self, text="Log de Atividade", bg="#1e1e1e", fg="#888888",
                  font=("Segoe UI", 9)).pack(anchor=tk.W, padx=2)
 
         log_frame = tk.Frame(self, bg="#000000", relief=tk.SUNKEN, bd=1)
         log_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
-        log_frame.pack_propagate(False)
 
         self.log_text = tk.Text(
             log_frame, bg="#000000", fg="#ffffff", font=("Consolas", 9),
