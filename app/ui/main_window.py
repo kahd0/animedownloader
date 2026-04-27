@@ -24,6 +24,9 @@ from ..core.downloader import (
 from ..core.api import search_anime_history, find_subtitles, check_for_app_updates
 from ..utils.async_bridge import run_async, set_app_ref, stop_loop
 from .styles import apply_styles, get_log_tags_colors
+from .dialogs.settings_dialog import SettingsDialog
+from .dialogs.episode_editor import EpisodeEditorDialog
+from .dialogs.subtitle_selector import SubtitleQueueProcessor
 
 class AnimeMonitorApp(tk.Tk):
     def __init__(self):
@@ -75,52 +78,7 @@ class AnimeMonitorApp(tk.Tk):
         run_async(check())
 
     def _action_open_settings(self):
-        win = tk.Toplevel(self)
-        win.title("Configurações")
-        win.geometry("500x300")
-        win.configure(bg="#2b2b2b")
-        win.transient(self)
-        win.grab_set()
-
-        # Centralizar a janela
-        win.update_idletasks()
-        x = self.winfo_x() + (self.winfo_width() // 2) - (win.winfo_width() // 2)
-        y = self.winfo_y() + (self.winfo_height() // 2) - (win.winfo_height() // 2)
-        win.geometry(f"+{x}+{y}")
-
-        def browse_folder(var):
-            path = filedialog.askdirectory()
-            if path:
-                var.set(path)
-
-        # Download Path
-        tk.Label(win, text="Pasta de Downloads (Monitorada):", bg="#2b2b2b", fg="#ffffff").pack(anchor=tk.W, padx=20, pady=(20, 0))
-        dl_var = tk.StringVar(value=get_setting_sync("download_path", os.path.join(os.path.expanduser("~"), "Downloads", "Torrents")))
-        dl_frame = tk.Frame(win, bg="#2b2b2b")
-        dl_frame.pack(fill=tk.X, padx=20, pady=5)
-        tk.Entry(dl_frame, textvariable=dl_var, bg="#1e1e1e", fg="#ffffff", insertbackground="white").pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(dl_frame, text="Procurar...", command=lambda: browse_folder(dl_var)).pack(side=tk.LEFT, padx=(5, 0))
-
-        # Organize Path
-        tk.Label(win, text="Pasta Final (Organizada):", bg="#2b2b2b", fg="#ffffff").pack(anchor=tk.W, padx=20, pady=(20, 0))
-        final_var = tk.StringVar(value=get_final_dir())
-        final_frame = tk.Frame(win, bg="#2b2b2b")
-        final_frame.pack(fill=tk.X, padx=20, pady=5)
-        tk.Entry(final_frame, textvariable=final_var, bg="#1e1e1e", fg="#ffffff", insertbackground="white").pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(final_frame, text="Procurar...", command=lambda: browse_folder(final_var)).pack(side=tk.LEFT, padx=(5, 0))
-
-        def save():
-            async def do_save():
-                await set_setting("download_path", dl_var.get())
-                await set_setting("organize_path", final_var.get())
-                # Atualizar cache no config.py
-                from ..core.config import load_settings_sync
-                load_settings_sync()
-                self.log("Configurações salvas com sucesso!", "green")
-                win.destroy()
-            run_async(do_save())
-
-        ttk.Button(win, text="Salvar", command=save).pack(pady=20)
+        SettingsDialog(self, self.log)
 
     def _on_close(self):
         stop_loop()
@@ -688,27 +646,10 @@ class AnimeMonitorApp(tk.Tk):
         if not data: return
         anime_id, name, current_ep = data[0], data[6] or data[1], data[2]
 
-        dialog = tk.Toplevel(self)
-        dialog.title("Editar Episódio")
-        dialog.configure(bg="#1e1e1e")
-        self._center_dialog(dialog, 340, 150)
-        tk.Label(dialog, text=name, bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10, "bold"), wraplength=310).pack(pady=(14, 4))
-        tk.Label(dialog, text="Último episódio registrado:", bg="#1e1e1e", fg="#aaaaaa", font=("Segoe UI", 9)).pack()
-        spinbox = ttk.Spinbox(dialog, from_=0, to=99999, width=10, font=("Segoe UI", 11)); spinbox.set(current_ep); spinbox.pack(pady=6)
-
-        saved = {"ok": False, "ep": current_ep}
-        def confirm():
-            try: saved["ep"] = int(spinbox.get())
-            except ValueError: saved["ep"] = current_ep
-            saved["ok"] = True; dialog.destroy()
-        btn_frame = tk.Frame(dialog, bg="#1e1e1e"); btn_frame.pack(pady=4)
-        ttk.Button(btn_frame, text="Salvar", command=confirm).pack(side=tk.LEFT, padx=8)
-        ttk.Button(btn_frame, text="Cancelar", command=dialog.destroy).pack(side=tk.LEFT, padx=8)
-        dialog.wait_window()
-        if not saved["ok"]: return
-        new_ep = saved["ep"]
-        def on_done(_): self.log(f"Episódio de '{name}' atualizado: {current_ep} → {new_ep}", "cyan"); self._refresh_table()
-        run_async(set_last_episode(anime_id, new_ep), on_done=on_done)
+        EpisodeEditorDialog(
+            self, anime_id, name, current_ep, 
+            self.log, self._refresh_table
+        )
 
     def _action_refresh_selected_metadata(self):
         selected = self.tree.selection()
@@ -768,90 +709,31 @@ class AnimeMonitorApp(tk.Tk):
         if not candidates:
             self.log("Nenhum anime com episódio registrado.", "yellow")
             return
+        
         to_auto, to_select = [], []
         for c in candidates:
-            if not c["subs"]: self.log(f"Legenda não encontrada: {c['pattern']} - Ep {c['last_ep']}", "yellow")
-            elif len(c["subs"]) == 1: to_auto.append(c)
-            else: to_select.append(c)
+            if not c["subs"]: 
+                self.log(f"Legenda não encontrada: {c['pattern']} - Ep {c['last_ep']}", "yellow")
+            elif len(c["subs"]) == 1: 
+                to_auto.append(c)
+            else: 
+                to_select.append(c)
+
         for c in to_auto:
-            run_async(download_chosen_subtitle(c["subs"][0], c["series_name"], c["ep_str"]), on_done=lambda path, p=c["pattern"], ep=c["ep_str"]: self._on_sub_downloaded(path, p, ep))
-        self._subtitle_selection_queue(to_select, 0)
+            run_async(
+                download_chosen_subtitle(c["subs"][0], c["series_name"], c["ep_str"]), 
+                on_done=lambda path, p=c["pattern"], ep=c["ep_str"]: self._on_sub_downloaded(path, p, ep)
+            )
 
-    def _subtitle_selection_queue(self, queue, index):
-        if index >= len(queue):
-            if queue: self._run_organize_logic()
-            return
-        c = queue[index]
-        chosen = self._show_subtitle_selector(c["pattern"], c["last_ep"], c["subs"])
-        if chosen:
-            run_async(download_chosen_subtitle(chosen, c["series_name"], c["ep_str"]), on_done=lambda path, p=c["pattern"], ep=c["ep_str"]: self._on_sub_downloaded(path, p, ep))
-        else: self.log(f"Legenda pulada: {c['pattern']} - Ep {c['last_ep']}", "yellow")
-        self._subtitle_selection_queue(queue, index + 1)
-
-    def _show_subtitle_selector(self, pattern, ep_num, subs):
-        dialog = tk.Toplevel(self)
-        dialog.title(f"{pattern} — Ep {ep_num}")
-        dialog.configure(bg="#1e1e1e")
-        self._center_dialog(dialog, 520, 460)
-
-        tk.Label(dialog, text=f"{len(subs)} legendas disponíveis para:\n{pattern} — Ep {ep_num}",
-                 bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10, "bold"), justify=tk.CENTER
-                 ).pack(pady=(14, 8))
-
-        chosen = {"sub": None}
-        selected_var = tk.IntVar(value=0)
-
-        # Buttons packed first so they always get space at the bottom
-        btn_frame = tk.Frame(dialog, bg="#1e1e1e")
-        btn_frame.pack(side=tk.BOTTOM, pady=10)
-        def confirm(): chosen["sub"] = subs[selected_var.get()]; dialog.destroy()
-        ttk.Button(btn_frame, text="Baixar Selecionada", command=confirm).pack(side=tk.LEFT, padx=8)
-        ttk.Button(btn_frame, text="Pular", command=dialog.destroy).pack(side=tk.LEFT, padx=8)
-
-        # Scrollable subtitle list
-        container = tk.Frame(dialog, bg="#1e1e1e")
-        container.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 4))
-
-        canvas = tk.Canvas(container, bg="#1e1e1e", bd=0, highlightthickness=0)
-        vsb = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        inner = tk.Frame(canvas, bg="#1e1e1e")
-        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
-
-        lang_flags = {"por": "🇧🇷 PT-BR", "eng": "🇬🇧 EN", "spa": "🇪🇸 ES"}
-        for i, sub in enumerate(subs):
-            info = sub.get("info", {})
-            filename = sub.get("filename", f"Legenda {i + 1}")
-            lang = info.get("lang", "unk")
-            desc = info.get("desc", "")
-            lang_str = lang_flags.get(lang, lang.upper())
-
-            is_br = lang == "por" and "forced" not in desc.lower() and "cc" not in desc.lower()
-            row_bg  = "#1a3a20" if is_br else "#2a2a2a"
-            fg_main = "#90ee90" if is_br else "#ffffff"
-            fg_detail = "#4caf50" if is_br else "#888888"
-
-            row = tk.Frame(inner, bg=row_bg)
-            row.pack(fill=tk.X, pady=2)
-            tk.Radiobutton(row, variable=selected_var, value=i, bg=row_bg,
-                           activebackground=row_bg, selectcolor="#1565c0", fg=fg_main
-                           ).pack(side=tk.LEFT, padx=6)
-            info_col = tk.Frame(row, bg=row_bg)
-            info_col.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=5)
-            name_text = filename if len(filename) <= 58 else filename[:55] + "…"
-            tk.Label(info_col, text=name_text, bg=row_bg, fg=fg_main,
-                     font=("Segoe UI", 9), anchor=tk.W).pack(anchor=tk.W)
-            detail = ("★ " if is_br else "") + (f"{lang_str}  •  {desc}" if desc else lang_str)
-            tk.Label(info_col, text=detail, bg=row_bg, fg=fg_detail,
-                     font=("Segoe UI", 8), anchor=tk.W).pack(anchor=tk.W)
-
-        dialog.wait_window()
-        return chosen["sub"]
+        if to_select:
+            processor = SubtitleQueueProcessor(
+                self, to_select, self.log, 
+                self._on_sub_downloaded, self._run_organize_logic
+            )
+            processor.process_next()
+        elif to_auto:
+            # Se só teve automáticos, rodar organização após um tempo
+            self.after(2000, self._run_organize_logic)
 
     def _on_sub_downloaded(self, path, pattern, ep_str):
         if path and not isinstance(path, Exception):

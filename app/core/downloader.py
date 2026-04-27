@@ -7,6 +7,7 @@ import os
 import shutil
 import asyncio
 from .config import get_source_dir, get_final_dir, SUBS_TEMP_DIR, COVERS_DIR
+from .naming import smart_rename, matches_pattern
 from .database import get_monitored_animes, update_last_episode, update_anime_metadata
 from .api import (
     fetch_latest_releases, search_anime_history, fetch_anime_metadata,
@@ -78,54 +79,22 @@ async def get_subtitle_candidates():
         })
     return candidates
 
-def matches_pattern(filename, pattern):
-    """Match filename against pattern tolerating season suffixes and punctuation differences.
-
-    smart_rename strips the season marker ("S2") from the filename, so
-    "Tsue to Tsurugi no Wistoria S2" would never match
-    "Tsue to Tsurugi no Wistoria - S02E01.mkv" with a plain `in` check.
-    """
-    fl = filename.lower()
-    pl = pattern.lower()
-
-    if pl in fl:
-        return True
-
-    # Strip trailing season marker ("Show S2" → "Show", "Show 2nd Season" → "Show")
-    stripped = re.sub(
-        r'\s*(?:[-–]\s*)?(?:\d+(?:st|nd|rd|th)\s+season|season\s+\d+|(?<!\w)s\d+)$',
-        '', pl
-    ).strip()
-    if stripped and stripped != pl and stripped in fl:
-        return True
-
-    # Normalize punctuation (": " / "' " → space) for both sides and retry
-    def norm(s):
-        return re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', s)).strip()
-
-    np = norm(stripped or pl)
-    if np and np in norm(fl):
-        return True
-
-    return False
-
 async def get_subtitle_candidates_for_anime(pattern):
-    """Busca candidatos de legenda para todos os eps sem legenda de um anime.
-
-    Searches both FINAL_DIR and SOURCE_DIR so that episodes which finished
-    downloading but haven't been organized yet are also covered.
-    """
+    """Busca candidatos de legenda para todos os eps sem legenda de um anime."""
     video_exts = (".mkv", ".mp4", ".avi")
     seen_eps: set[int] = set()
     candidates = []
+    
+    source_dir = get_source_dir()
+    final_dir = get_final_dir()
 
-    for search_dir in (FINAL_DIR, SOURCE_DIR):
+    for search_dir in (final_dir, source_dir):
         if not os.path.exists(search_dir):
             continue
 
         videos = sorted(
             f for f in os.listdir(search_dir)
-            if f.lower().endswith(video_exts) and _matches_pattern(f, pattern)
+            if f.lower().endswith(video_exts) and matches_pattern(f, pattern)
         )
 
         for video_file in videos:
@@ -192,27 +161,6 @@ def open_path(path):
     except Exception as e:
         print(f"Erro ao abrir {path}: {e}")
         return False
-
-def smart_rename(filename):
-    """[SubsPlease] Show - 12 (1080p) [hash].mkv  →  Show - S01E12.mkv"""
-    m = re.match(r'\[SubsPlease\]\s+(.+?)\s+-\s+(\d+)\s+\(\d+p\)', filename, re.I)
-    if not m:
-        return filename
-    show = m.group(1).strip()
-    ep = int(m.group(2))
-    ext = os.path.splitext(filename)[1]
-    season = 1
-    s_match = re.search(
-        r'(?:[-–]\s*)?(?:(\d+)(?:st|nd|rd|th)\s+season|season\s+(\d+)|(?<!\w)[Ss](\d+)$)',
-        show, re.I
-    )
-    if s_match:
-        season = int(next(g for g in s_match.groups() if g))
-        show = re.sub(
-            r'\s*(?:[-–]\s*)?(?:\d+(?:st|nd|rd|th)\s+season|season\s+\d+|(?<!\w)[Ss]\d+)$',
-            '', show, flags=re.I
-        ).strip()
-    return f"{show} - S{season:02d}E{ep:02d}{ext}"
 
 def trigger_magnet(magnet_link):
     try:
