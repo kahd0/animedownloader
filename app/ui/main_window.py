@@ -1,23 +1,27 @@
 import os
 import re
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
 from PIL import Image, ImageTk, ImageDraw
 
-from ..core.config import STATUS_COLORS, STATUS_PT, COVER_W, COVER_H, COVERS_DIR, FINAL_DIR
+from ..core.config import (
+    STATUS_COLORS, STATUS_PT, COVER_W, COVER_H, COVERS_DIR, 
+    get_final_dir, VERSION, GITHUB_REPO, get_setting as get_setting_sync
+)
 from ..core.database import (
     init_db, get_monitored_animes, add_anime, remove_anime,
-    update_anime_metadata, clear_new_episode_flag, set_last_episode
+    update_anime_metadata, clear_new_episode_flag, set_last_episode,
+    set_setting
 )
 from ..core.downloader import (
     check_for_updates, search_subsplease_shows, process_releases,
     organize_downloads, force_download_subs, open_path,
     download_cover, get_subtitle_candidates, download_chosen_subtitle,
     check_subtitle_status, refresh_single_metadata, refresh_all_metadata,
-    get_subtitle_candidates_for_anime,
+    get_subtitle_candidates_for_anime, matches_pattern
 )
-from ..core.api import search_anime_history, find_subtitles
+from ..core.api import search_anime_history, find_subtitles, check_for_app_updates
 from ..utils.async_bridge import run_async, set_app_ref, stop_loop
 from .styles import apply_styles, get_log_tags_colors
 
@@ -47,6 +51,7 @@ class AnimeMonitorApp(tk.Tk):
         ))
         self.after(600_000, self._periodic_refresh)
         self.after(500, self._action_refresh)
+        self.after(2000, self._check_app_updates)
 
     def _apply_custom_styles(self):
         apply_styles(self)
@@ -54,6 +59,68 @@ class AnimeMonitorApp(tk.Tk):
         self.tree.tag_configure("finished", foreground="#888888")
         self.tree.tag_configure("upcoming", foreground="#2196f3")
         self.tree.tag_configure("new_ep",   background="#1b3328")
+
+    def _check_app_updates(self):
+        async def check():
+            update = await check_for_app_updates(GITHUB_REPO)
+            if update and update["tag_name"] != VERSION:
+                if messagebox.askyesno(
+                    "Nova Versão disponível",
+                    f"Uma nova versão ({update['tag_name']}) está disponível!\n\n"
+                    f"Deseja abrir a página de download?\n\n"
+                    f"Mudanças:\n{update['body'][:200]}..."
+                ):
+                    import webbrowser
+                    webbrowser.open(update["html_url"])
+        run_async(check())
+
+    def _action_open_settings(self):
+        win = tk.Toplevel(self)
+        win.title("Configurações")
+        win.geometry("500x300")
+        win.configure(bg="#2b2b2b")
+        win.transient(self)
+        win.grab_set()
+
+        # Centralizar a janela
+        win.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() // 2) - (win.winfo_width() // 2)
+        y = self.winfo_y() + (self.winfo_height() // 2) - (win.winfo_height() // 2)
+        win.geometry(f"+{x}+{y}")
+
+        def browse_folder(var):
+            path = filedialog.askdirectory()
+            if path:
+                var.set(path)
+
+        # Download Path
+        tk.Label(win, text="Pasta de Downloads (Monitorada):", bg="#2b2b2b", fg="#ffffff").pack(anchor=tk.W, padx=20, pady=(20, 0))
+        dl_var = tk.StringVar(value=get_setting_sync("download_path", os.path.join(os.path.expanduser("~"), "Downloads", "Torrents")))
+        dl_frame = tk.Frame(win, bg="#2b2b2b")
+        dl_frame.pack(fill=tk.X, padx=20, pady=5)
+        tk.Entry(dl_frame, textvariable=dl_var, bg="#1e1e1e", fg="#ffffff", insertbackground="white").pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(dl_frame, text="Procurar...", command=lambda: browse_folder(dl_var)).pack(side=tk.LEFT, padx=(5, 0))
+
+        # Organize Path
+        tk.Label(win, text="Pasta Final (Organizada):", bg="#2b2b2b", fg="#ffffff").pack(anchor=tk.W, padx=20, pady=(20, 0))
+        final_var = tk.StringVar(value=get_final_dir())
+        final_frame = tk.Frame(win, bg="#2b2b2b")
+        final_frame.pack(fill=tk.X, padx=20, pady=5)
+        tk.Entry(final_frame, textvariable=final_var, bg="#1e1e1e", fg="#ffffff", insertbackground="white").pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(final_frame, text="Procurar...", command=lambda: browse_folder(final_var)).pack(side=tk.LEFT, padx=(5, 0))
+
+        def save():
+            async def do_save():
+                await set_setting("download_path", dl_var.get())
+                await set_setting("organize_path", final_var.get())
+                # Atualizar cache no config.py
+                from ..core.config import load_settings_sync
+                load_settings_sync()
+                self.log("Configurações salvas com sucesso!", "green")
+                win.destroy()
+            run_async(do_save())
+
+        ttk.Button(win, text="Salvar", command=save).pack(pady=20)
 
     def _on_close(self):
         stop_loop()
@@ -118,7 +185,7 @@ class AnimeMonitorApp(tk.Tk):
         ttk.Button(action_frame, text="Remover Selecionado",command=self._action_delete).pack(side=tk.LEFT, padx=4)
         ttk.Button(action_frame, text="▶ Play",             command=self._action_play).pack(side=tk.LEFT, padx=4)
         ttk.Button(action_frame, text="📁 Abrir Pasta",     command=self._action_open_folder).pack(side=tk.LEFT, padx=4)
-        ttk.Button(action_frame, text="🔄 Metadados",       command=self._action_refresh_all_metadata).pack(side=tk.LEFT, padx=4)
+        ttk.Button(action_frame, text="⚙ Configurações",    command=self._action_open_settings).pack(side=tk.LEFT, padx=4)
 
         tk.Label(self, text="Log de Atividade", bg="#1e1e1e", fg="#888888",
                  font=("Segoe UI", 9)).pack(anchor=tk.W, padx=10)
@@ -170,10 +237,20 @@ class AnimeMonitorApp(tk.Tk):
         tk.Label(self.sidebar, text="Legenda", bg="#252525", fg="#555555",
                  font=("Segoe UI", 8)).pack()
         self.sidebar_sub_status = tk.Label(
-            self.sidebar, text="", bg="#252525", fg="#888888",
+            self.sidebar, text="", bg="#252525", fg="#555555",
             font=("Segoe UI", 8), wraplength=155, justify=tk.CENTER,
         )
-        self.sidebar_sub_status.pack(padx=6, pady=(2, 0))
+        self.sidebar_sub_status.pack(padx=6, pady=(10, 0))
+
+        # Espaçador para empurrar os botões de configuração para baixo
+        tk.Frame(self.sidebar, bg="#252525").pack(expand=True, fill=tk.BOTH)
+
+        version_label = tk.Label(
+            self.sidebar, text=f"Versão: {VERSION}", bg="#252525", fg="#666666",
+            font=("Segoe UI", 7)
+        )
+        version_label.pack(pady=(0, 5))
+
 
     def _set_placeholder_cover(self):
         img = Image.new("RGB", (COVER_W, COVER_H), "#333333")
@@ -484,13 +561,14 @@ class AnimeMonitorApp(tk.Tk):
         data = self._anime_data.get(iid)
         if not data: return
         pattern = data[1].lower()
+        anime_name = data[6] or data[1]
 
-        if not os.path.exists(FINAL_DIR):
+        if not os.path.exists(get_final_dir()):
             self.log("Pasta de episódios não encontrada.", "red")
             return
 
         video_exts = (".mkv", ".mp4", ".avi")
-        matches = [f for f in os.listdir(FINAL_DIR) if f.lower().endswith(video_exts) and pattern in f.lower()]
+        matches = [f for f in os.listdir(get_final_dir()) if f.lower().endswith(video_exts) and matches_pattern(f, pattern)]
         if not matches:
             self.log(f"Nenhum episódio encontrado para '{pattern}'.", "yellow")
             return
@@ -499,14 +577,59 @@ class AnimeMonitorApp(tk.Tk):
             m = re.search(r'S\d+E(\d+)', name, re.I) or re.search(r'[\s-]0?(\d+)[\s(]', name)
             return int(m.group(1)) if m else 0
         matches.sort(key=ep_key)
-        latest = os.path.join(FINAL_DIR, matches[-1])
-        self.log(f"Abrindo: {matches[-1]}", "green")
-        open_path(latest)
+
+        if len(matches) == 1:
+            latest = os.path.join(get_final_dir(), matches[0])
+            self.log(f"Abrindo: {matches[0]}", "green")
+            open_path(latest)
+        else:
+            # Criar uma janelinha de seleção
+            win = tk.Toplevel(self)
+            win.title(f"Selecionar Episódio - {anime_name}")
+            win.geometry("500x400")
+            win.configure(bg="#1e1e1e")
+            win.transient(self)
+            win.grab_set()
+
+            # Centralizar
+            win.update_idletasks()
+            x = self.winfo_x() + (self.winfo_width() // 2) - (win.winfo_width() // 2)
+            y = self.winfo_y() + (self.winfo_height() // 2) - (win.winfo_height() // 2)
+            win.geometry(f"+{x}+{y}")
+
+            tk.Label(win, text="Vários episódios encontrados:", bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10, "bold")).pack(pady=10)
+
+            frame = tk.Frame(win, bg="#1e1e1e")
+            frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+            listbox = tk.Listbox(frame, bg="#2a2a2a", fg="#ffffff", font=("Segoe UI", 10), selectbackground="#1565c0", bd=0, highlightthickness=0)
+            vsb = ttk.Scrollbar(frame, orient="vertical", command=listbox.yview)
+            listbox.configure(yscrollcommand=vsb.set)
+            
+            listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+            # Inserir do mais novo para o mais antigo para facilitar
+            for m in reversed(matches):
+                listbox.insert(tk.END, m)
+
+            def play_selected():
+                sel = listbox.curselection()
+                if sel:
+                    file_name = listbox.get(sel[0])
+                    path = os.path.join(get_final_dir(), file_name)
+                    self.log(f"Abrindo: {file_name}", "green")
+                    open_path(path)
+                    win.destroy()
+
+            listbox.bind("<Double-Button-1>", lambda e: play_selected())
+            ttk.Button(win, text="Reproduzir Selecionado", command=play_selected).pack(pady=10)
+            ttk.Button(win, text="Cancelar", command=win.destroy).pack(pady=(0, 15))
 
     def _action_open_folder(self):
-        os.makedirs(FINAL_DIR, exist_ok=True)
-        open_path(FINAL_DIR)
-        self.log(f"Pasta aberta: {FINAL_DIR}", "cyan")
+        os.makedirs(get_final_dir(), exist_ok=True)
+        open_path(get_final_dir())
+        self.log(f"Pasta aberta: {get_final_dir()}", "cyan")
 
     def _action_mark_watched(self):
         selected = self.tree.selection()
@@ -517,14 +640,14 @@ class AnimeMonitorApp(tk.Tk):
         anime_id, pattern = data[0], data[1]
 
         video_exts = (".mkv", ".mp4", ".avi")
-        matches = [f for f in os.listdir(FINAL_DIR) if f.lower().endswith(video_exts) and pattern.lower() in f.lower()] if os.path.exists(FINAL_DIR) else []
+        matches = [f for f in os.listdir(get_final_dir()) if f.lower().endswith(video_exts) and matches_pattern(f, pattern)] if os.path.exists(get_final_dir()) else []
         files_to_delete = []
         for video_file in matches:
-            files_to_delete.append(os.path.join(FINAL_DIR, video_file))
+            files_to_delete.append(os.path.join(get_final_dir(), video_file))
             name_no_ext = os.path.splitext(video_file)[0]
-            for f in os.listdir(FINAL_DIR):
+            for f in os.listdir(get_final_dir()):
                 if f.startswith(name_no_ext) and f.lower().endswith((".ass", ".srt")):
-                    files_to_delete.append(os.path.join(FINAL_DIR, f))
+                    files_to_delete.append(os.path.join(get_final_dir(), f))
 
         video_count = len([f for f in files_to_delete if f.lower().endswith(video_exts)])
         if not files_to_delete:
@@ -617,16 +740,16 @@ class AnimeMonitorApp(tk.Tk):
         run_async(refresh_all_metadata(), on_done=on_done)
 
     def _refresh_sub_status(self, pattern: str, iid: str):
-        if not os.path.exists(FINAL_DIR): return
+        if not os.path.exists(get_final_dir()): return
         video_exts = (".mkv", ".mp4", ".avi")
         def ep_sort(name):
             m = re.search(r'S\d+E(\d+)', name, re.I) or re.search(r'[\s-]0?(\d+)[\s(]', name)
             return int(m.group(1)) if m else 0
-        matches = sorted([f for f in os.listdir(FINAL_DIR) if f.lower().endswith(video_exts) and pattern.lower() in f.lower()], key=ep_sort)
+        matches = sorted([f for f in os.listdir(get_final_dir()) if f.lower().endswith(video_exts) and matches_pattern(f, pattern)], key=ep_sort)
         if not matches:
             if iid == self._current_sidebar_iid: self.sidebar_sub_status.config(text="Sem episódios locais", fg="#555555")
             return
-        video_path = os.path.join(FINAL_DIR, matches[-1])
+        video_path = os.path.join(get_final_dir(), matches[-1])
         status = check_subtitle_status(video_path)
         if status["embedded"] and status["external"]:
             langs = ", ".join(status["embedded_langs"])

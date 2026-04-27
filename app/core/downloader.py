@@ -6,7 +6,7 @@ import subprocess
 import os
 import shutil
 import asyncio
-from .config import SOURCE_DIR, FINAL_DIR, SUBS_TEMP_DIR, COVERS_DIR
+from .config import get_source_dir, get_final_dir, SUBS_TEMP_DIR, COVERS_DIR
 from .database import get_monitored_animes, update_last_episode, update_anime_metadata
 from .api import (
     fetch_latest_releases, search_anime_history, fetch_anime_metadata,
@@ -78,7 +78,7 @@ async def get_subtitle_candidates():
         })
     return candidates
 
-def _matches_pattern(filename, pattern):
+def matches_pattern(filename, pattern):
     """Match filename against pattern tolerating season suffixes and punctuation differences.
 
     smart_rename strips the season marker ("S2") from the filename, so
@@ -223,21 +223,23 @@ def trigger_magnet(magnet_link):
 
 async def organize_downloads():
     """Move vídeos e busca legendas correspondentes"""
-    os.makedirs(FINAL_DIR, exist_ok=True)
+    source_dir = get_source_dir()
+    final_dir = get_final_dir()
+    os.makedirs(final_dir, exist_ok=True)
     moved_files = []
 
     # 1. Mover vídeos da pasta de Downloads para a pasta FINAL
-    if os.path.exists(SOURCE_DIR):
+    if os.path.exists(source_dir):
         monitored = await get_monitored_animes()
-        for filename in os.listdir(SOURCE_DIR):
+        for filename in os.listdir(source_dir):
             if filename.endswith((".!qB", ".part")): continue
             if not filename.lower().endswith((".mkv", ".mp4", ".avi")): continue
 
             for _, pattern, _, _, *_ in monitored:
-                if pattern.lower() in filename.lower():
-                    old_path = os.path.join(SOURCE_DIR, filename)
+                if matches_pattern(filename, pattern):
+                    old_path = os.path.join(source_dir, filename)
                     new_name = smart_rename(filename)
-                    new_path = os.path.join(FINAL_DIR, new_name)
+                    new_path = os.path.join(final_dir, new_name)
                     try:
                         shutil.move(old_path, new_path)
                         if new_name != filename:
@@ -249,7 +251,7 @@ async def organize_downloads():
 
     # 2. Parear legendas com vídeos na pasta FINAL
     if os.path.exists(SUBS_TEMP_DIR):
-        for video_file in os.listdir(FINAL_DIR):
+        for video_file in os.listdir(final_dir):
             if not video_file.lower().endswith((".mkv", ".mp4", ".avi")): continue
             
             ep_match = re.search(r'S\d+E(\d+)', video_file, re.I)
@@ -261,14 +263,14 @@ async def organize_downloads():
                 ep_num = ep_match.group(1).zfill(2)
             video_name_no_ext = os.path.splitext(video_file)[0]
             
-            has_sub = any(video_name_no_ext in f and f.lower().endswith((".ass", ".srt")) for f in os.listdir(FINAL_DIR))
+            has_sub = any(video_name_no_ext in f and f.lower().endswith((".ass", ".srt")) for f in os.listdir(final_dir))
             if has_sub: continue
 
             for sub_file in os.listdir(SUBS_TEMP_DIR):
                 if f"_ep{ep_num}" in sub_file.lower():
                     sub_ext = os.path.splitext(sub_file)[1]
                     old_sub_path = os.path.join(SUBS_TEMP_DIR, sub_file)
-                    new_sub_path = os.path.join(FINAL_DIR, f"{video_name_no_ext}{sub_ext}")
+                    new_sub_path = os.path.join(final_dir, f"{video_name_no_ext}{sub_ext}")
                     try:
                         shutil.move(old_sub_path, new_sub_path)
                         moved_files.append(f"Legenda pareada: {video_file}")

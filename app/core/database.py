@@ -17,6 +17,12 @@ async def init_db():
                 has_new_episode INTEGER DEFAULT 0
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
         for col, definition in [
             ("last_download_date", "TEXT DEFAULT NULL"),
             ("cover_url",          "TEXT DEFAULT NULL"),
@@ -28,6 +34,20 @@ async def init_db():
                 await db.execute(f"ALTER TABLE monitored ADD COLUMN {col} {definition}")
             except Exception:
                 pass
+        await db.commit()
+
+async def get_setting(key, default=None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else default
+
+async def set_setting(key, value):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, str(value))
+        )
         await db.commit()
 
 async def add_anime(title_pattern, resolution='1080p', start_episode=0):

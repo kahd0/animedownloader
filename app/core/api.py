@@ -4,6 +4,23 @@ import lzma
 import os
 from .config import API_URL, SEARCH_URL, ANIMETOSHO_API, JIKAN_API, SUBS_TEMP_DIR
 
+async def check_for_app_updates(repo):
+    """Verifica se há uma nova versão no GitHub releases."""
+    async with httpx.AsyncClient() as client:
+        try:
+            url = f"https://api.github.com/repos/{repo}/releases/latest"
+            resp = await client.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                return {
+                    "tag_name": data.get("tag_name"),
+                    "html_url": data.get("html_url"),
+                    "body": data.get("body")
+                }
+        except Exception as e:
+            print(f"Erro ao verificar atualizações: {e}")
+    return None
+
 async def fetch_latest_releases():
     async with httpx.AsyncClient() as client:
         try:
