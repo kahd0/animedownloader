@@ -141,10 +141,16 @@ class AnimeMonitorApp(tk.Tk):
     def _check_app_updates(self):
         import sys
 
+        def _parse_version(tag: str):
+            import re
+            nums = re.findall(r'\d+', tag)
+            return tuple(int(n) for n in nums)
+
         def on_checked(update):
             if isinstance(update, Exception) or not update:
                 return
-            if update["tag_name"] == VERSION:
+            remote = update["tag_name"]
+            if _parse_version(remote) <= _parse_version(VERSION):
                 return
 
             is_frozen = getattr(sys, "frozen", False)
