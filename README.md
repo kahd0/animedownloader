@@ -1,26 +1,26 @@
 # Anime Monitor
 
-Desktop app to monitor and automatically download new anime episodes via torrents. Tracks your watchlist, fetches metadata from Jikan/MAL, and organizes files automatically.
+App desktop para monitorar e baixar automaticamente novos episódios de anime via torrent. Gerencia sua lista, busca metadados do MyAnimeList e organiza os arquivos automaticamente.
 
-## Features
+## Funcionalidades
 
-- Monitor multiple anime series simultaneously
-- Auto-detect new episode releases via SubsPlease RSS
-- Trigger torrent downloads automatically (via magnet links)
-- Fetch and display metadata (cover art, status, synopsis) from MyAnimeList
-- Subtitle download from AnimeTosho
-- Auto-organize downloaded files into the episodes folder
-- System tray icon with notifications
-- Import/export watchlist
-- Auto-update support
+- Monitorar múltiplas séries simultaneamente
+- Detectar automaticamente novos episódios via RSS do SubsPlease
+- Disparar downloads via magnet link automaticamente
+- Buscar e exibir metadados (capa, status, sinopse) do MyAnimeList
+- Download de legendas pelo AnimeTosho
+- Organizar arquivos baixados para a pasta de episódios automaticamente
+- Ícone na bandeja do sistema com notificações
+- Importar/exportar lista de animes
+- Atualização automática do app
 
-## Requirements
+## Requisitos
 
 - Python 3.11+
-- `tkinter` (usually bundled; on Linux: `sudo apt install python3-tk`)
-- A BitTorrent client that supports magnet links (e.g. qBittorrent)
+- `tkinter` (geralmente incluso; no Linux: `sudo apt install python3-tk`)
+- Um cliente BitTorrent com suporte a magnet links (ex: qBittorrent)
 
-## Installation
+## Instalação
 
 ```bash
 git clone https://github.com/kahd0/animedownloader.git
@@ -30,30 +30,30 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Running
+## Executando
 
 ```bash
 source .venv/bin/activate
 PYTHONPATH=. python3 main.py
 ```
 
-## Project Structure
+## Estrutura do Projeto
 
 ```
 app/
-  core/       # Config, database, API clients, download logic
-  ui/         # tkinter GUI (main window, dialogs, components)
-  utils/      # Async bridge, updater, episode parser
-episodes/     # Final destination for downloaded video files
-legendas/     # Temp directory for downloaded subtitles
-covers/       # Anime cover images (downloaded at runtime)
+  core/       # Config, banco de dados, APIs, lógica de download
+  ui/         # Interface tkinter (janela principal, diálogos, componentes)
+  utils/      # Bridge async, atualizador, parser de episódios
+episodes/     # Destino final dos arquivos de vídeo baixados
+legendas/     # Pasta temporária para legendas baixadas
+covers/       # Capas dos animes (baixadas em tempo de execução)
 ```
 
-## Configuration
+## Configuração
 
-On first run, open **Settings** to configure:
+Na primeira execução, abra **Configurações** para definir:
 
-- **Episodes folder** — where organized video files are saved
-- **Subtitles folder** — temp folder for downloaded `.ass` files
-- **Check interval** — how often to poll for new releases (minutes)
-- **Auto-organize** — automatically move completed torrents to the episodes folder
+- **Pasta de episódios** — onde os vídeos organizados são salvos
+- **Pasta de legendas** — pasta temporária para arquivos `.ass`
+- **Intervalo de verificação** — frequência para checar novos episódios (minutos)
+- **Organizar automaticamente** — mover torrents concluídos para a pasta de episódios
