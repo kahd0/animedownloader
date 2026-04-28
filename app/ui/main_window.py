@@ -35,6 +35,7 @@ from .dialogs.subtitle_selector import SubtitleQueueProcessor
 from .dialogs.anime_adder import AnimeAdderLogic
 from .dialogs.play_selector import PlaySelectorDialog
 from .dialogs.confirm_clear import ConfirmClearDialog
+from .dialogs.feedback_dialog import FeedbackDialog
 from .dialogs.watched_selector import WatchedSelectorDialog
 from .dialogs.error_reporter import show_error_dialog
 
@@ -130,6 +131,7 @@ class AnimeMonitorApp(tk.Tk):
         ttk.Button(action_frame, text="▶ Play",             command=self._action_play).pack(side=tk.LEFT, padx=4)
         ttk.Button(action_frame, text="📁 Abrir Pasta",     command=self._action_open_folder).pack(side=tk.LEFT, padx=4)
         ttk.Button(action_frame, text="⚙ Configurações",    command=self._action_open_settings).pack(side=tk.LEFT, padx=4)
+        ttk.Button(action_frame, text="⚑ Relatar Problema", command=self._action_report_feedback).pack(side=tk.LEFT, padx=4)
 
         # Log Component
         self.activity_log = ActivityLog(self, height=180)
@@ -394,6 +396,7 @@ class AnimeMonitorApp(tk.Tk):
         EpisodeEditorDialog(self, data[0], data[6] or data[1], data[2], self.log, self._refresh_table)
 
     def _action_open_settings(self): SettingsDialog(self, self.log)
+    def _action_report_feedback(self): FeedbackDialog(self)
     def _action_open_folder(self): 
         os.makedirs(get_final_dir(), exist_ok=True)
         open_path(get_final_dir())
