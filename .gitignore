@@ -174,3 +174,12 @@ cython_debug/
 
 # Database
 anime_monitor.db
+
+# Covers (downloaded at runtime)
+covers/
+
+# Local launcher script
+run_downloader.sh
+
+# Claude Code instructions (internal dev tool)
+CLAUDE.md

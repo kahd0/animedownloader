@@ -36,6 +36,7 @@ from .dialogs.anime_adder import AnimeAdderLogic
 from .dialogs.play_selector import PlaySelectorDialog
 from .dialogs.confirm_clear import ConfirmClearDialog
 from .dialogs.watched_selector import WatchedSelectorDialog
+from .dialogs.error_reporter import show_error_dialog
 
 class AnimeMonitorApp(tk.Tk):
     def __init__(self):
@@ -458,6 +459,10 @@ class AnimeMonitorApp(tk.Tk):
     def _periodic_refresh(self):
         self._action_refresh()
         self.update_check_timer()
+
+    def report_callback_exception(self, exc_type, exc_value, exc_tb):
+        exc_value.__traceback__ = exc_tb
+        show_error_dialog(self, exc_value, "Erro na interface")
 
     def _on_close(self):
         stop_loop(); self.destroy()
