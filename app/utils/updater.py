@@ -30,17 +30,10 @@ def apply_update_and_restart(new_file_path):
     """Cria script de substituição, executa e fecha o app atual."""
     current_exe = os.path.abspath(sys.argv[0])
     system = platform.system().lower()
-    
+
     if system == "windows":
-        # Script .bat para Windows
-        # 1. Espera o processo pai fechar
-        # 2. Deleta o antigo
-        # 3. Move o novo para o lugar do antigo
-        # 4. Reinicia o app
-        # 5. Se deleta
-        bat_content = f"""
-@echo off
-timeout /t 2 /nobreak > nul
+        bat_content = f"""@echo off
+timeout /t 4 /nobreak > nul
 del /f /q "{current_exe}"
 move /y "{new_file_path}" "{current_exe}"
 start "" "{current_exe}"
@@ -49,13 +42,16 @@ del "%~f0"
         bat_path = os.path.join(os.path.dirname(current_exe), "update_helper.bat")
         with open(bat_path, "w") as f:
             f.write(bat_content)
-        
-        subprocess.Popen([bat_path], shell=True)
-        
+
+        subprocess.Popen(
+            bat_path,
+            shell=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+
     else:
-        # Script .sh para Linux
         sh_content = f"""#!/bin/bash
-sleep 2
+sleep 3
 rm -f "{current_exe}"
 mv -f "{new_file_path}" "{current_exe}"
 chmod +x "{current_exe}"
@@ -65,9 +61,10 @@ rm "$0"
         sh_path = os.path.join(os.path.dirname(current_exe), "update_helper.sh")
         with open(sh_path, "w") as f:
             f.write(sh_content)
-        
+
         os.chmod(sh_path, 0o755)
         subprocess.Popen(["/bin/bash", sh_path])
 
-    # Fecha o aplicativo imediatamente
-    sys.exit(0)
+    # os._exit evita que os handlers atexit do PyInstaller deletem _MEI* antes
+    # do novo processo terminar de inicializar, prevenindo o erro de DLL.
+    os._exit(0)
