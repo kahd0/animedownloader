@@ -121,7 +121,7 @@ class AnimeAdderLogic:
             meta = await fetch_anime_metadata(title_pattern)
             if not meta: return
             await update_anime_metadata(row[0], meta["official_title"], meta["cover_url"], meta["airing_status"])
-            return await get_monitored_animes()
+            return await self.parent._load_table_async()
             
         def on_meta_done(res):
             if res and not isinstance(res, Exception):
