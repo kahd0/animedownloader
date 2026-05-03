@@ -176,19 +176,35 @@ class AnimeSidebar(tk.Frame):
         lbl = tk.Label(popup, image=ref, bg="#1e1e1e", cursor="hand2")
         lbl.image = ref
         lbl.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-        lbl.bind("<Button-1>", lambda e: popup.destroy())
-        popup.bind("<Escape>", lambda e: popup.destroy())
-
-        def _do_resize(w, h):
-            if w < 50 or h < 50: return
-            tmp = orig_img.copy()
-            tmp.thumbnail((w - 8, h - 8), Image.LANCZOS)
-            new_ref = ImageTk.PhotoImage(tmp)
-            lbl.configure(image=new_ref)
-            lbl.image = new_ref
 
         last_size = [init.width, init.height]
         resize_job = [None]
+
+        def _close_popup(e=None):
+            if resize_job[0]:
+                try:
+                    popup.after_cancel(resize_job[0])
+                except Exception:
+                    pass
+                resize_job[0] = None
+            popup.destroy()
+
+        lbl.bind("<Button-1>", _close_popup)
+        popup.bind("<Escape>", _close_popup)
+        popup.protocol("WM_DELETE_WINDOW", _close_popup)
+
+        def _do_resize(w, h):
+            if w < 50 or h < 50: return
+            try:
+                if not popup.winfo_exists():
+                    return
+                tmp = orig_img.copy()
+                tmp.thumbnail((w - 8, h - 8), Image.LANCZOS)
+                new_ref = ImageTk.PhotoImage(tmp)
+                lbl.configure(image=new_ref)
+                lbl.image = new_ref
+            except Exception:
+                pass
 
         def _on_resize(event):
             if event.widget is not popup: return
@@ -201,7 +217,6 @@ class AnimeSidebar(tk.Frame):
         pw, ph = init.width + 8, init.height + 8
         popup.geometry(f"{pw}x{ph}")
         popup.transient(root)
-        popup.grab_set()
 
     def clear(self):
         self._current_iid = None

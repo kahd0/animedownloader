@@ -21,7 +21,7 @@ def show_error_dialog(parent, exc: BaseException, context: str = ""):
     win.configure(bg="#1e1e1e")
     win.geometry("700x480")
     win.resizable(True, True)
-    win.grab_set()
+    win.after_idle(lambda: win.grab_set() if win.winfo_exists() else None)
 
     def _on_close():
         parent._error_dialog_open = False
