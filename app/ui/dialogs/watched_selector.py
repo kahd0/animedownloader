@@ -2,7 +2,7 @@ import asyncio
 import os
 import tkinter as tk
 from tkinter import ttk
-from ...core.downloader import get_final_dir, matches_pattern
+from ...core.downloader import get_final_dir, matches_pattern, check_for_updates_single
 from ...core.database import set_last_episode, clear_new_episode_flag
 from ...core.config import should_delete_on_watched
 from ...utils.async_bridge import run_async
@@ -89,6 +89,7 @@ class WatchedSelectorDialog(tk.Toplevel):
         delete_on_watched = should_delete_on_watched()
         final_dir = get_final_dir()
         anime_id = self.anime_id
+        pattern = self.pattern
         log_cb = self.log_callback
         refresh_cb = self.refresh_callback
 
@@ -134,7 +135,11 @@ class WatchedSelectorDialog(tk.Toplevel):
                 else:
                     if log_cb:
                         log_cb(f"Assistidos marcados (arquivos mantidos). Novo status: Ep {max_watched}", "cyan")
-            refresh_cb()
+                refresh_cb()
+                def on_refill(triggered):
+                    if triggered and not isinstance(triggered, Exception):
+                        refresh_cb()
+                run_async(check_for_updates_single(anime_id, pattern), on_done=on_refill)
             try:
                 self.destroy()
             except Exception:

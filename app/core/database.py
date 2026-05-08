@@ -29,11 +29,16 @@ async def init_db():
             ("official_title",     "TEXT DEFAULT NULL"),
             ("airing_status",      "TEXT DEFAULT NULL"),
             ("has_new_episode",    "INTEGER DEFAULT 0"),
+            ("last_downloaded",    "INTEGER DEFAULT 0"),
         ]:
             try:
                 await db.execute(f"ALTER TABLE monitored ADD COLUMN {col} {definition}")
             except Exception:
                 pass
+        await db.commit()
+        await db.execute(
+            "UPDATE monitored SET last_downloaded = last_episode WHERE last_downloaded = 0 AND last_episode > 0"
+        )
         await db.commit()
 
 async def get_setting(key, default=None):
@@ -54,8 +59,8 @@ async def add_anime(title_pattern, resolution='1080p', start_episode=0):
     async with aiosqlite.connect(DB_PATH) as db:
         try:
             await db.execute(
-                "INSERT INTO monitored (title_pattern, resolution, last_episode) VALUES (?, ?, ?)",
-                (title_pattern, resolution, start_episode)
+                "INSERT INTO monitored (title_pattern, resolution, last_episode, last_downloaded) VALUES (?, ?, ?, ?)",
+                (title_pattern, resolution, start_episode, start_episode)
             )
             await db.commit()
             return True
@@ -71,7 +76,7 @@ async def get_monitored_animes():
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             """SELECT id, title_pattern, last_episode, resolution, last_download_date,
-                      cover_url, official_title, airing_status, has_new_episode
+                      cover_url, official_title, airing_status, has_new_episode, last_downloaded
                FROM monitored"""
         ) as cursor:
             return await cursor.fetchall()
@@ -103,8 +108,8 @@ async def update_last_episode(title_pattern, episode_num):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """UPDATE monitored
-               SET last_episode = ?, last_download_date = ?, has_new_episode = 1
-               WHERE title_pattern = ? AND last_episode < ?""",
+               SET last_downloaded = ?, last_download_date = ?, has_new_episode = 1
+               WHERE title_pattern = ? AND last_downloaded < ?""",
             (episode_num, now, title_pattern, episode_num)
         )
         await db.commit()

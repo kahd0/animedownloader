@@ -83,11 +83,12 @@ class SubtitleSelectorDialog(tk.Toplevel):
             fg_main = "#4caf50" if is_br else "#ffffff"
             fg_detail = "#888888"
 
-            name_text = s.get('filename') or f"Legenda #{i+1}"
+            name_text = s.get('filename') or f"[{lang_str}] Legenda #{i+1}"
             tk.Label(info_col, text=name_text, bg=row_bg, fg=fg_main,
                      font=("Segoe UI", 9), anchor=tk.W).pack(anchor=tk.W)
-            
-            detail = ("★ " if is_br else "") + (f"{lang_str}  •  {desc}" if desc else lang_str)
+
+            source_badge = " [OpenSubtitles]" if s.get('source') == 'opensubtitles' else ""
+            detail = ("★ " if is_br else "") + (f"{lang_str}  •  {desc}" if desc else lang_str) + source_badge
             tk.Label(info_col, text=detail, bg=row_bg, fg=fg_detail,
                      font=("Segoe UI", 8), anchor=tk.W).pack(anchor=tk.W)
 
@@ -117,7 +118,7 @@ class SubtitleQueueProcessor:
         def on_chosen(chosen):
             if chosen:
                 run_async(
-                    download_chosen_subtitle(chosen, c["series_name"], c["ep_str"]),
+                    download_chosen_subtitle(chosen, c["series_name"], c["ep_str"], target_video_path=c.get("video_path")),
                     on_done=lambda path, p=c["pattern"], ep=c["ep_str"]: self.on_sub_downloaded_callback(path, p, ep)
                 )
             else:

@@ -409,21 +409,33 @@ class AnimeMonitorApp(tk.Tk):
         data = self._anime_data.get(selected[0])
         if not data: return
         self.log(f"Buscando legendas para '{data[6] or data[1]}'...", "blue")
+        _running = [True]
+        _elapsed = [0]
+        def _ping():
+            if _running[0]:
+                _elapsed[0] += 10
+                self.log(f"Ainda buscando... ({_elapsed[0]}s)", "blue")
+                self.after(10000, _ping)
+        self.after(10000, _ping)
         def on_candidates(res):
-            if res and not isinstance(res, Exception): self._process_subtitle_candidates(res)
+            _running[0] = False
+            if isinstance(res, Exception):
+                self.log(f"Erro ao buscar legendas: {res}", "red")
+            elif res:
+                self._process_subtitle_candidates(res)
+            else:
+                self.log("Nenhum episódio sem legenda encontrado.", "yellow")
         run_async(get_subtitle_candidates_for_anime(data[1]), on_done=on_candidates)
 
     def _process_subtitle_candidates(self, candidates):
-        to_auto, to_select = [], []
+        with_subs = [c for c in candidates if c["subs"]]
         for c in candidates:
-            if not c["subs"]: continue
-            if len(c["subs"]) == 1: to_auto.append(c)
-            else: to_select.append(c)
-        for c in to_auto:
-            run_async(download_chosen_subtitle(c["subs"][0], c["series_name"], c["ep_str"]), 
-                      on_done=lambda path, p=c["pattern"], ep=c["ep_str"]: self._on_sub_downloaded(path, p, ep))
-        if to_select:
-            SubtitleQueueProcessor(self, to_select, self.log, self._on_sub_downloaded, self._action_organize).process_next()
+            if not c["subs"]:
+                self.log(f"Nenhuma legenda encontrada: {c['pattern']} - Ep {c['last_ep']}", "yellow")
+            else:
+                self.log(f"{len(c['subs'])} legenda(s) encontrada(s): {c['pattern']} - Ep {c['last_ep']}", "blue")
+        if with_subs:
+            SubtitleQueueProcessor(self, with_subs, self.log, self._on_sub_downloaded, self._action_organize).process_next()
 
     def _on_sub_downloaded(self, path, pattern, ep_str):
         if path and not isinstance(path, Exception):

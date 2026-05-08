@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 
 # Versão do Aplicativo
 VERSION = "v1.0.7"
@@ -10,6 +11,7 @@ API_URL = "https://subsplease.org/api/?f=latest&tz=UTC"
 SEARCH_URL = "https://subsplease.org/api/?f=search&tz=UTC&s="
 ANIMETOSHO_API = "https://feed.animetosho.org/json"
 JIKAN_API = "https://api.jikan.moe/v4"
+OPENSUBTITLES_API = "https://api.opensubtitles.com/api/v1"
 
 # Quando compilado pelo PyInstaller (sys.frozen=True), __file__ aponta para o
 # diretório temporário de extração. Usa sys.executable para manter dados
@@ -68,6 +70,36 @@ def is_auto_organize_enabled():
 
 def should_delete_on_watched():
     return get_setting("delete_on_watched", "True") == "True"
+
+def get_download_ahead():
+    try:
+        return int(get_setting("download_ahead", "3"))
+    except (ValueError, TypeError):
+        return 3
+
+_DEFAULT_SUBTITLE_SOURCES = [
+    {"id": "animetosho",    "name": "AnimeTosho",    "enabled": True,  "priority": 1},
+    {"id": "opensubtitles", "name": "OpenSubtitles", "enabled": True,  "priority": 2},
+]
+
+def get_rss_feeds() -> list[dict]:
+    raw = get_setting("rss_feeds", "")
+    if not raw:
+        return []
+    try:
+        return [f for f in json.loads(raw) if f.get("enabled")]
+    except Exception:
+        return []
+
+def get_subtitle_sources() -> list[dict]:
+    raw = get_setting("subtitle_sources", "")
+    if not raw:
+        return list(_DEFAULT_SUBTITLE_SOURCES)
+    try:
+        sources = json.loads(raw)
+        return sorted(sources, key=lambda s: s.get("priority", 99))
+    except Exception:
+        return list(_DEFAULT_SUBTITLE_SOURCES)
 
 # Inicializa o cache
 load_settings_sync()

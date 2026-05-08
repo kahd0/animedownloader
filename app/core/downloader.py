@@ -6,7 +6,7 @@ import subprocess
 import os
 import shutil
 import asyncio
-from .config import get_source_dir, get_final_dir, get_subs_dir, COVERS_DIR
+from .config import get_source_dir, get_final_dir, get_subs_dir, COVERS_DIR, get_download_ahead
 from .naming import smart_rename, matches_pattern
 from .database import get_monitored_animes, update_last_episode, update_anime_metadata
 from .api import (
@@ -16,12 +16,14 @@ from .api import (
 from ..utils.episode_parser import extract_episode_number
 
 _SUB_SORT_KEY = lambda s: (
-    0 if (s.get('info', {}).get('lang') == 'por'
-          and 'forced' not in s.get('info', {}).get('desc', '').lower()
-          and 'cc' not in s.get('info', {}).get('desc', '').lower())
-    else 1 if s.get('info', {}).get('lang') == 'por'
-    else 2 if s.get('info', {}).get('lang') == 'eng'
-    else 3
+    (0 if (s.get('info', {}).get('lang') == 'por'
+           and 'forced' not in s.get('info', {}).get('desc', '').lower()
+           and 'cc' not in s.get('info', {}).get('desc', '').lower())
+     else 1 if s.get('info', {}).get('lang') == 'por'
+     else 2 if s.get('info', {}).get('lang') == 'eng'
+     else 3),
+    0 if s.get('info', {}).get('codec', 'ass').lower() == 'ass' else 1,
+    0 if s.get('source', 'animetosho') == 'animetosho' else 1,
 )
 
 async def search_subsplease_shows(query):
@@ -105,18 +107,21 @@ async def get_subtitle_candidates_for_anime(pattern):
                 continue
             seen_eps.add(ep_num)
 
-            status = await asyncio.to_thread(check_subtitle_status, os.path.join(search_dir, video_file))
+            video_path = os.path.join(search_dir, video_file)
+            status = await asyncio.to_thread(check_subtitle_status, video_path)
             has_pt = "por" in (status.get("embedded_langs") or [])
-            if status["external"] or has_pt:
-                continue
+            if has_pt:
+                continue  # Embedded PT-BR exists — definitely correct, skip
 
             subs, series_name, ep_str = await find_subtitles(pattern, ep_num)
+            subs.sort(key=_SUB_SORT_KEY)
             candidates.append({
                 "pattern":     pattern,
                 "last_ep":     ep_num,
                 "subs":        subs,
                 "series_name": series_name,
                 "ep_str":      ep_str,
+                "video_path":  video_path,
             })
 
     return candidates
@@ -218,8 +223,20 @@ async def organize_downloads():
             )
             if has_sub: continue
 
+            # Derive the expected subtitle prefix from the monitored pattern
+            video_safe_prefix = None
+            for _, pattern, *_ in monitored:
+                if matches_pattern(video_file, pattern):
+                    sname = re.sub(r's\d+|e\d+|-.*$|\d+p.*$', '', pattern, flags=re.I).strip()
+                    video_safe_prefix = re.sub(r'[^\w\s-]', '', sname).strip().lower()
+                    break
+
             for sub_file in subs_files:
-                if f"_ep{ep_num_str}" in sub_file.lower():
+                sub_lower = sub_file.lower()
+                if f"_ep{ep_num_str}" not in sub_lower:
+                    continue
+                if video_safe_prefix and not sub_lower.startswith(video_safe_prefix):
+                    continue
                     sub_ext = os.path.splitext(sub_file)[1]
                     old_sub_path = os.path.join(subs_dir, sub_file)
                     new_sub_name = f"{video_name_no_ext}{sub_ext}"
@@ -245,19 +262,27 @@ async def process_releases(releases_list, monitored_list=None):
 
     normalized.sort(key=lambda x: int(x.get('episode', 0)) if str(x.get('episode', '')).isdigit() else 0)
 
+    download_ahead = get_download_ahead()
+
     for info in normalized:
         show_name = info.get('show', '')
         try: episode_num = int(info.get('episode', 0))
         except (ValueError, TypeError):
             continue
 
-        for anime_id, pattern, last_ep, res, *_ in monitored_list:
-            if pattern.lower() in show_name.lower() and episode_num > last_ep:
+        for row in monitored_list:
+            anime_id        = row[0]
+            pattern         = row[1]
+            last_watched    = row[2]
+            res             = row[3]
+            last_downloaded = row[9]
+
+            if pattern.lower() in show_name.lower() and last_downloaded < episode_num <= last_watched + download_ahead:
                 magnet = None
                 for dl in info.get('downloads', []):
                     if dl.get('res') == res.replace('p', ''):
                         magnet = dl.get('magnet'); break
-                
+
                 if not magnet and info.get('downloads'): magnet = info['downloads'][0].get('magnet')
 
                 if magnet and trigger_magnet(magnet):
@@ -265,13 +290,17 @@ async def process_releases(releases_list, monitored_list=None):
                     sub_file = await download_subtitle(show_name, episode_num)
                     sub_msg = " (Legenda baixada)" if sub_file else " (Legenda não encontrada ainda)"
                     downloads_triggered.append(f"{show_name} - {episode_num} ({res}){sub_msg}")
-                    monitored_list = [(aid, p, episode_num if p == pattern else lep, r, *rest) for aid, p, lep, r, *rest in monitored_list]
-    
+                    monitored_list = [
+                        row[:9] + (episode_num,) if row[1] == pattern else row
+                        for row in monitored_list
+                    ]
+
     return downloads_triggered
 
 async def check_for_updates():
     monitored = await get_monitored_animes()
-    if not monitored: return []
+    if not monitored:
+        return []
     latest = await fetch_latest_releases()
     triggered = await process_releases(latest.items(), monitored)
     all_triggered = list(triggered)
@@ -282,8 +311,42 @@ async def check_for_updates():
             if history:
                 deep_triggered = await process_releases(history, monitored)
                 all_triggered.extend(deep_triggered)
-                if deep_triggered: monitored = await get_monitored_animes()
+                if deep_triggered:
+                    monitored = await get_monitored_animes()
+
+    from .config import get_rss_feeds
+    from .api import fetch_rss_feed
+    for feed in get_rss_feeds():
+        if "{show}" in feed["url"]:
+            for row in monitored:
+                rss_releases = await fetch_rss_feed(feed["url"], row[1])
+                if rss_releases:
+                    rss_triggered = await process_releases(rss_releases, monitored)
+                    all_triggered.extend(rss_triggered)
+                    if rss_triggered:
+                        monitored = await get_monitored_animes()
+        else:
+            rss_releases = await fetch_rss_feed(feed["url"])
+            if rss_releases:
+                rss_triggered = await process_releases(rss_releases, monitored)
+                all_triggered.extend(rss_triggered)
+                if rss_triggered:
+                    monitored = await get_monitored_animes()
+
     return all_triggered
+
+async def check_for_updates_single(anime_id: int, pattern: str):
+    monitored = await get_monitored_animes()
+    single = [row for row in monitored if row[0] == anime_id]
+    if not single:
+        return []
+    latest = await fetch_latest_releases()
+    triggered = await process_releases(latest.items(), single)
+    if not triggered:
+        history = await search_anime_history(pattern)
+        if history:
+            triggered = await process_releases(history, single)
+    return triggered
 
 async def force_download_subs():
     monitored = await get_monitored_animes()

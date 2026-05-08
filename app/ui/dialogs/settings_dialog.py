@@ -3,9 +3,10 @@ import json
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from ...core.config import (
-    get_setting, get_final_dir, get_subs_dir, 
-    get_default_resolution, is_auto_organize_enabled, 
-    should_delete_on_watched, load_settings_sync,
+    get_setting, get_final_dir, get_subs_dir,
+    get_default_resolution, is_auto_organize_enabled,
+    should_delete_on_watched, get_download_ahead, load_settings_sync,
+    get_subtitle_sources,
     VERSION, GITHUB_REPO
 )
 from ...core.database import set_setting, get_monitored_animes, import_animes
@@ -47,7 +48,15 @@ class SettingsDialog(tk.Toplevel):
                 await set_setting("check_interval", interval_var.get())
                 await set_setting("auto_organize", str(auto_org_var.get()))
                 await set_setting("delete_on_watched", str(delete_watched_var.get()))
-                
+                await set_setting("download_ahead", download_ahead_var.get())
+                await set_setting("opensubtitles_api_key", os_key_var.get())
+                await set_setting("rss_feeds", json.dumps(rss_feeds_list))
+
+                for i, src in enumerate(sub_sources):
+                    src["priority"] = i + 1
+                    src["enabled"] = sub_enabled_vars[i].get()
+                await set_setting("subtitle_sources", json.dumps(sub_sources))
+
                 load_settings_sync()
                 
                 # Avisar a janela principal sobre a mudança do intervalo
@@ -162,10 +171,198 @@ class SettingsDialog(tk.Toplevel):
 
         # Deletar ao marcar visto
         delete_watched_var = tk.BooleanVar(value=should_delete_on_watched())
-        tk.Checkbutton(main_frame, text="Excluir arquivos ao marcar como assistido", 
-                       variable=delete_watched_var, bg="#2b2b2b", fg="#ffffff", 
-                       selectcolor="#1e1e1e", activebackground="#2b2b2b", 
+        tk.Checkbutton(main_frame, text="Excluir arquivos ao marcar como assistido",
+                       variable=delete_watched_var, bg="#2b2b2b", fg="#ffffff",
+                       selectcolor="#1e1e1e", activebackground="#2b2b2b",
                        activeforeground="#ffffff").pack(anchor=tk.W, padx=20, pady=5)
+
+        # Buffer de download
+        ahead_frame = tk.Frame(main_frame, bg="#2b2b2b")
+        ahead_frame.pack(fill=tk.X, padx=20, pady=5)
+        tk.Label(ahead_frame, text="Episódios no buffer de download:", bg="#2b2b2b", fg="#ffffff").pack(side=tk.LEFT)
+        download_ahead_var = tk.StringVar(value=str(get_download_ahead()))
+        ttk.Spinbox(ahead_frame, from_=0, to=20, textvariable=download_ahead_var, width=10).pack(side=tk.LEFT, padx=10)
+
+        ttk.Separator(main_frame, orient="horizontal").pack(fill=tk.X, padx=20, pady=10)
+
+        # --- SEÇÃO DE APIS EXTERNAS ---
+        tk.Label(main_frame, text="APIs Externas", bg="#2b2b2b", fg="#4caf50", font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, padx=20, pady=(0, 4))
+
+        tk.Label(main_frame, text="OpenSubtitles API Key (fallback PT-BR):", bg="#2b2b2b", fg="#ffffff").pack(anchor=tk.W, padx=20)
+        tk.Label(main_frame, text="Obtenha em opensubtitles.com/consumers → crie um app", bg="#2b2b2b", fg="#888888", font=("Segoe UI", 8)).pack(anchor=tk.W, padx=20)
+        os_key_var = tk.StringVar(value=get_setting("opensubtitles_api_key", ""))
+        tk.Entry(main_frame, textvariable=os_key_var, bg="#1e1e1e", fg="#ffffff", insertbackground="white", show="*").pack(fill=tk.X, padx=20, pady=(4, 15))
+
+        ttk.Separator(main_frame, orient="horizontal").pack(fill=tk.X, padx=20, pady=10)
+
+        # --- SEÇÃO FONTES DE EPISÓDIOS ---
+        tk.Label(main_frame, text="Fontes de Episódios", bg="#2b2b2b", fg="#4caf50",
+                 font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, padx=20, pady=(0, 4))
+        tk.Label(main_frame, text='Feeds RSS extras além do SubsPlease. Use {show} na URL para busca por anime.',
+                 bg="#2b2b2b", fg="#888888", font=("Segoe UI", 8), wraplength=480).pack(anchor=tk.W, padx=20)
+
+        try:
+            rss_feeds_list = json.loads(get_setting("rss_feeds", "[]"))
+            if not isinstance(rss_feeds_list, list):
+                rss_feeds_list = []
+        except Exception:
+            rss_feeds_list = []
+
+        rss_frame = tk.Frame(main_frame, bg="#1e1e1e", relief=tk.SUNKEN, bd=1)
+        rss_frame.pack(fill=tk.X, padx=20, pady=(6, 4))
+
+        rss_listbox = tk.Listbox(rss_frame, bg="#1e1e1e", fg="#ffffff",
+                                 selectbackground="#1565c0", height=4,
+                                 font=("Segoe UI", 9), relief=tk.FLAT, bd=0)
+        rss_listbox.pack(fill=tk.X, padx=4, pady=4)
+
+        def _render_rss_list():
+            rss_listbox.delete(0, tk.END)
+            rss_listbox.insert(tk.END, "[✓] SubsPlease (padrão, sempre ativo)")
+            rss_listbox.itemconfig(0, fg="#888888")
+            for f in rss_feeds_list:
+                state = "✓" if f.get("enabled", True) else "✗"
+                rss_listbox.insert(tk.END, f"[{state}] {f['name']}  —  {f['url']}")
+                rss_listbox.itemconfig(tk.END, fg="#4caf50" if f.get("enabled", True) else "#888888")
+
+        _render_rss_list()
+
+        rss_btn_frame = tk.Frame(main_frame, bg="#2b2b2b")
+        rss_btn_frame.pack(anchor=tk.W, padx=20, pady=(0, 10))
+
+        def _rss_add():
+            dlg = tk.Toplevel(self)
+            dlg.title("Adicionar Feed RSS")
+            dlg.configure(bg="#2b2b2b")
+            dlg.transient(self)
+            dlg.grab_set()
+            dlg.geometry("480x150")
+            x = self.winfo_x() + self.winfo_width() // 2 - 240
+            y = self.winfo_y() + self.winfo_height() // 2 - 75
+            dlg.geometry(f"+{x}+{y}")
+            tk.Label(dlg, text="Nome:", bg="#2b2b2b", fg="#ffffff").pack(anchor=tk.W, padx=20, pady=(10, 2))
+            name_var2 = tk.StringVar()
+            tk.Entry(dlg, textvariable=name_var2, bg="#1e1e1e", fg="#ffffff",
+                     insertbackground="white").pack(fill=tk.X, padx=20)
+            tk.Label(dlg, text="URL:", bg="#2b2b2b", fg="#ffffff").pack(anchor=tk.W, padx=20, pady=(8, 2))
+            url_var2 = tk.StringVar()
+            tk.Entry(dlg, textvariable=url_var2, bg="#1e1e1e", fg="#ffffff",
+                     insertbackground="white").pack(fill=tk.X, padx=20)
+            btn_f2 = tk.Frame(dlg, bg="#2b2b2b")
+            btn_f2.pack(pady=10)
+            def _confirm_add():
+                n, u = name_var2.get().strip(), url_var2.get().strip()
+                if n and u:
+                    rss_feeds_list.append({"name": n, "url": u, "enabled": True})
+                    _render_rss_list()
+                dlg.destroy()
+            ttk.Button(btn_f2, text="Adicionar", command=_confirm_add).pack(side=tk.LEFT, padx=8)
+            ttk.Button(btn_f2, text="Cancelar", command=dlg.destroy).pack(side=tk.LEFT, padx=8)
+
+        def _rss_remove():
+            sel = rss_listbox.curselection()
+            if not sel:
+                return
+            idx = sel[0] - 1  # -1 because SubsPlease is at index 0
+            if idx < 0:
+                return
+            rss_feeds_list.pop(idx)
+            _render_rss_list()
+
+        def _rss_toggle():
+            sel = rss_listbox.curselection()
+            if not sel:
+                return
+            idx = sel[0] - 1
+            if idx < 0:
+                return
+            rss_feeds_list[idx]["enabled"] = not rss_feeds_list[idx].get("enabled", True)
+            _render_rss_list()
+            rss_listbox.selection_set(sel[0])
+
+        ttk.Button(rss_btn_frame, text="+ Adicionar", command=_rss_add).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(rss_btn_frame, text="Ativar/Desativar", command=_rss_toggle).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(rss_btn_frame, text="- Remover", command=_rss_remove).pack(side=tk.LEFT)
+
+        ttk.Separator(main_frame, orient="horizontal").pack(fill=tk.X, padx=20, pady=10)
+
+        # --- SEÇÃO FONTES DE LEGENDAS ---
+        tk.Label(main_frame, text="Fontes de Legendas", bg="#2b2b2b", fg="#4caf50",
+                 font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, padx=20, pady=(0, 4))
+        tk.Label(main_frame, text="Ordem de prioridade para busca de legendas. Reordene com ↑↓.",
+                 bg="#2b2b2b", fg="#888888", font=("Segoe UI", 8)).pack(anchor=tk.W, padx=20)
+
+        try:
+            sub_sources = get_subtitle_sources()
+        except Exception:
+            sub_sources = [
+                {"id": "animetosho",    "name": "AnimeTosho",    "enabled": True, "priority": 1},
+                {"id": "opensubtitles", "name": "OpenSubtitles", "enabled": True, "priority": 2},
+            ]
+
+        sub_enabled_vars = []
+        sub_sources_frame = tk.Frame(main_frame, bg="#2b2b2b")
+        sub_sources_frame.pack(fill=tk.X, padx=20, pady=(6, 10))
+
+        def _build_sub_rows():
+            for w in sub_sources_frame.winfo_children():
+                w.destroy()
+            sub_enabled_vars.clear()
+            for i, src in enumerate(sub_sources):
+                row = tk.Frame(sub_sources_frame, bg="#252525", pady=4)
+                row.pack(fill=tk.X, pady=2)
+                up_btn = ttk.Button(row, text="↑", width=2, command=lambda idx=i: _move_sub_source(idx, -1))
+                up_btn.pack(side=tk.LEFT, padx=(4, 2))
+                if i == 0:
+                    up_btn.config(state="disabled")
+                dn_btn = ttk.Button(row, text="↓", width=2, command=lambda idx=i: _move_sub_source(idx, 1))
+                dn_btn.pack(side=tk.LEFT, padx=(0, 6))
+                if i == len(sub_sources) - 1:
+                    dn_btn.config(state="disabled")
+                var = tk.BooleanVar(value=src.get("enabled", True))
+                sub_enabled_vars.append(var)
+                tk.Checkbutton(row, variable=var, text=src["name"],
+                               bg="#252525", fg="#ffffff", selectcolor="#1e1e1e",
+                               activebackground="#252525", activeforeground="#ffffff"
+                               ).pack(side=tk.LEFT)
+                tk.Label(row, text=f"  (prioridade {i + 1})", bg="#252525",
+                         fg="#888888", font=("Segoe UI", 8)).pack(side=tk.LEFT)
+                if src["id"] == "opensubtitles":
+                    ttk.Button(row, text="⚙ API Key", command=_show_os_key_dialog).pack(side=tk.RIGHT, padx=8)
+
+        def _move_sub_source(idx, direction):
+            for i, var in enumerate(sub_enabled_vars):
+                sub_sources[i]["enabled"] = var.get()
+            new_idx = idx + direction
+            if 0 <= new_idx < len(sub_sources):
+                sub_sources[idx], sub_sources[new_idx] = sub_sources[new_idx], sub_sources[idx]
+                _build_sub_rows()
+
+        def _show_os_key_dialog():
+            dlg = tk.Toplevel(self)
+            dlg.title("OpenSubtitles API Key")
+            dlg.configure(bg="#2b2b2b")
+            dlg.transient(self)
+            dlg.grab_set()
+            dlg.geometry("480x120")
+            x = self.winfo_x() + self.winfo_width() // 2 - 240
+            y = self.winfo_y() + self.winfo_height() // 2 - 60
+            dlg.geometry(f"+{x}+{y}")
+            tk.Label(dlg, text="OpenSubtitles API Key:", bg="#2b2b2b", fg="#ffffff").pack(anchor=tk.W, padx=20, pady=(10, 2))
+            tk.Label(dlg, text="Obtenha em opensubtitles.com/consumers → crie um app",
+                     bg="#2b2b2b", fg="#888888", font=("Segoe UI", 8)).pack(anchor=tk.W, padx=20)
+            os_key_dlg_var = tk.StringVar(value=os_key_var.get())
+            tk.Entry(dlg, textvariable=os_key_dlg_var, bg="#1e1e1e", fg="#ffffff",
+                     insertbackground="white", show="*").pack(fill=tk.X, padx=20, pady=(4, 0))
+            btn_f3 = tk.Frame(dlg, bg="#2b2b2b")
+            btn_f3.pack(pady=10)
+            def _confirm_key():
+                os_key_var.set(os_key_dlg_var.get())
+                dlg.destroy()
+            ttk.Button(btn_f3, text="Salvar", command=_confirm_key).pack(side=tk.LEFT, padx=8)
+            ttk.Button(btn_f3, text="Cancelar", command=dlg.destroy).pack(side=tk.LEFT, padx=8)
+
+        _build_sub_rows()
 
         ttk.Separator(main_frame, orient="horizontal").pack(fill=tk.X, padx=20, pady=10)
 

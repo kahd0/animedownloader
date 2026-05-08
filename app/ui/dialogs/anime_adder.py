@@ -22,32 +22,37 @@ class AnimeAdderLogic:
         def on_history(result):
             if isinstance(result, Exception):
                 self.log_callback(f"Erro ao buscar histórico: {result}", "red")
-                history, max_ep, feed_name = None, 0, raw_name
+                history, max_ep, min_ep, feed_name = None, 0, 0, raw_name
             else:
                 history = list(result) if result else []
-                max_ep, feed_counts = 0, {}
+                max_ep, min_ep, feed_counts = 0, 0, {}
+                eps = []
                 for item in history:
                     info = item[1] if isinstance(item, tuple) else item
                     fn = info.get('show', '') if isinstance(info, dict) else ""
                     if fn: feed_counts[fn] = feed_counts.get(fn, 0) + 1
-                    try: 
+                    try:
                         ep = int(info.get("episode", 0))
+                        if ep > 0: eps.append(ep)
                         max_ep = max(max_ep, ep)
                     except: pass
+                min_ep = min(eps) if eps else 0
                 feed_name = max(feed_counts, key=feed_counts.get) if feed_counts else raw_name
-            
-            self._show_episode_dialog(raw_name, max_ep, history, feed_name)
+
+            self._show_episode_dialog(raw_name, max_ep, min_ep, history, feed_name)
             
         run_async(search_anime_history(raw_name), on_done=on_history)
 
-    def _show_episode_dialog(self, name: str, max_ep: int, history, feed_name: str = ""):
+    def _show_episode_dialog(self, name: str, max_ep: int, min_ep: int, history, feed_name: str = ""):
         feed_name = feed_name or name
         dialog = tk.Toplevel(self.parent)
         dialog.title(feed_name)
         dialog.configure(bg="#1e1e1e")
-        
-        # Centralizar
-        w, h = 340, (185 if feed_name != name else 160)
+
+        has_feed_label = feed_name != name
+        has_range = min_ep > 0 and max_ep > 0
+        h = 160 + (25 if has_feed_label else 0) + (30 if has_range else 0)
+        w = 340
         self.parent.update_idletasks()
         x = self.parent.winfo_x() + (self.parent.winfo_width() - w) // 2
         y = self.parent.winfo_y() + (self.parent.winfo_height() - h) // 2
@@ -55,16 +60,20 @@ class AnimeAdderLogic:
         dialog.transient(self.parent)
         dialog.grab_set()
 
-        if feed_name != name: 
-            tk.Label(dialog, text=f"Feed: {feed_name}", bg="#1e1e1e", fg="#4ec9b0", 
+        if has_feed_label:
+            tk.Label(dialog, text=f"Feed: {feed_name}", bg="#1e1e1e", fg="#4ec9b0",
                      font=("Segoe UI", 9), wraplength=310).pack(pady=(12, 0))
-                     
-        tk.Label(dialog, text=f"Último episódio no histórico: {max_ep}." if max_ep > 0 else "Nenhum histórico encontrado.", 
+
+        tk.Label(dialog, text=f"Último episódio no histórico: {max_ep}." if max_ep > 0 else "Nenhum histórico encontrado.",
                  bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10)).pack(pady=(8, 4))
-                 
+
         spinbox = ttk.Spinbox(dialog, from_=0, to=max(max_ep, 9999), width=10, font=("Segoe UI", 11))
         spinbox.set(max(0, max_ep - 2) if max_ep > 0 else 0)
         spinbox.pack(pady=8)
+
+        if has_range:
+            tk.Label(dialog, text=f"⚠ Histórico disponível: ep {min_ep} – {max_ep}",
+                     bg="#1e1e1e", fg="#f0a500", font=("Segoe UI", 8)).pack(pady=(0, 4))
         
         chosen = {"ep": None}
         def confirm():
