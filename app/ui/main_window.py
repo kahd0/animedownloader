@@ -46,7 +46,7 @@ class AnimeMonitorApp(tk.Tk):
 
         self.title("Anime Monitor")
         self.geometry("1060x700")
-        self.configure(bg="#1e1e1e")
+        self.configure(bg="#121212")
         self.resizable(True, True)
 
         self._anime_data: dict = {}
@@ -77,11 +77,11 @@ class AnimeMonitorApp(tk.Tk):
 
     def _build_ui(self):
         # Frame Principal Superior (Tabela + Sidebar)
-        top_container = tk.Frame(self, bg="#1e1e1e")
-        top_container.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 4))
+        top_container = tk.Frame(self, bg="#121212")
+        top_container.pack(fill=tk.BOTH, expand=True, padx=16, pady=(16, 8))
 
         # Tabela
-        table_frame = tk.Frame(top_container, bg="#1e1e1e")
+        table_frame = tk.Frame(top_container, bg="#121212")
         table_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         cols = ("ID", "Anime", "Último Ep", "Resolução", "Último Download", "Status")
@@ -106,11 +106,11 @@ class AnimeMonitorApp(tk.Tk):
 
         # Sidebar Component
         self.sidebar = AnimeSidebar(top_container)
-        self.sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(6, 0))
+        self.sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(16, 0))
 
         # Input Area
-        input_frame = tk.Frame(self, bg="#1e1e1e")
-        input_frame.pack(fill=tk.X, padx=8, pady=4)
+        input_frame = tk.Frame(self, bg="#121212")
+        input_frame.pack(fill=tk.X, padx=16, pady=8)
 
         self.entry = ttk.Entry(input_frame, font=("Segoe UI", 11))
         self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
@@ -118,24 +118,35 @@ class AnimeMonitorApp(tk.Tk):
         self.entry.bind("<KeyRelease>", self._on_entry_key)
         self.entry.bind("<FocusOut>", lambda e: self.after(150, self._close_suggestions))
 
-        ttk.Button(input_frame, text="Adicionar", command=self._add_anime).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(input_frame, text="Adicionar", command=self._add_anime).pack(side=tk.LEFT, padx=(16, 0))
 
         # Action Buttons
-        action_frame = tk.Frame(self, bg="#1e1e1e")
-        action_frame.pack(fill=tk.X, padx=8, pady=4)
+        action_frame = tk.Frame(self, bg="#121212")
+        action_frame.pack(fill=tk.X, padx=16, pady=8)
 
-        ttk.Button(action_frame, text="Verificar Agora",    command=self._action_refresh).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(action_frame, text="Organizar",          command=self._action_organize).pack(side=tk.LEFT, padx=4)
-        ttk.Button(action_frame, text="Buscar Legendas",    command=self._action_download_subs).pack(side=tk.LEFT, padx=4)
-        ttk.Button(action_frame, text="Remover Selecionado",command=self._action_delete).pack(side=tk.LEFT, padx=4)
-        ttk.Button(action_frame, text="▶ Play",             command=self._action_play).pack(side=tk.LEFT, padx=4)
-        ttk.Button(action_frame, text="📁 Abrir Pasta",     command=self._action_open_folder).pack(side=tk.LEFT, padx=4)
-        ttk.Button(action_frame, text="⚙ Configurações",    command=self._action_open_settings).pack(side=tk.LEFT, padx=4)
-        ttk.Button(action_frame, text="⚑ Relatar Problema", command=self._action_report_feedback).pack(side=tk.LEFT, padx=4)
+        left_actions = tk.Frame(action_frame, bg="#121212")
+        left_actions.pack(side=tk.LEFT)
+
+        right_actions = tk.Frame(action_frame, bg="#121212")
+        right_actions.pack(side=tk.RIGHT)
+
+        ttk.Button(left_actions, text="Verificar Agora",    command=self._action_refresh).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(left_actions, text="Organizar",          command=self._action_organize).pack(side=tk.LEFT, padx=8)
+        ttk.Button(left_actions, text="Buscar Legendas",    command=self._action_download_subs).pack(side=tk.LEFT, padx=8)
+        
+        # Spacer frame to act as a separator since ttk.Separator can be tricky on dark mode
+        tk.Frame(left_actions, bg="#333333", width=1).pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=4)
+        
+        ttk.Button(left_actions, text="▶ Play",             command=self._action_play).pack(side=tk.LEFT, padx=8)
+        ttk.Button(left_actions, text="Remover Selecionado",command=self._action_delete).pack(side=tk.LEFT, padx=8)
+
+        ttk.Button(right_actions, text="⚑ Relatar Problema", command=self._action_report_feedback).pack(side=tk.LEFT, padx=8)
+        ttk.Button(right_actions, text="📁 Abrir Pasta",     command=self._action_open_folder).pack(side=tk.LEFT, padx=8)
+        ttk.Button(right_actions, text="⚙ Configurações",    command=self._action_open_settings).pack(side=tk.LEFT, padx=(8, 0))
 
         # Log Component
-        self.activity_log = ActivityLog(self, height=180)
-        self.activity_log.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 8))
+        self.activity_log = ActivityLog(self, height=160)
+        self.activity_log.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=(8, 16))
 
     def log(self, message: str, color: str = "white"):
         self.activity_log.log(message, color)

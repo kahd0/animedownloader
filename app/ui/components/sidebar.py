@@ -11,7 +11,7 @@ from ...utils.episode_parser import extract_episode_number
 
 class AnimeSidebar(tk.Frame):
     def __init__(self, parent, **kwargs):
-        super().__init__(parent, bg="#252525", width=170, **kwargs)
+        super().__init__(parent, bg="#1e1e1e", width=170, **kwargs)
         self.pack_propagate(False)
         self._cover_cache = {}
         self._current_iid = None
@@ -20,44 +20,44 @@ class AnimeSidebar(tk.Frame):
         self._build_ui()
 
     def _build_ui(self):
-        self.cover_label = tk.Label(self, bg="#252525", cursor="hand2")
+        self.cover_label = tk.Label(self, bg="#1e1e1e", cursor="hand2")
         self.cover_label.pack(pady=(12, 6))
         self.cover_label.bind("<Button-1>", self._on_cover_click)
         self._set_placeholder_cover()
 
         self.sidebar_title = tk.Label(
-            self, text="—", bg="#252525", fg="#ffffff",
+            self, text="—", bg="#1e1e1e", fg="#ffffff",
             font=("Segoe UI", 9, "bold"), wraplength=155, justify=tk.CENTER,
         )
         self.sidebar_title.pack(padx=6, pady=(0, 4))
 
         self.sidebar_status = tk.Label(
-            self, text="", bg="#252525", fg="#888888",
+            self, text="", bg="#1e1e1e", fg="#888888",
             font=("Segoe UI", 9), wraplength=155, justify=tk.CENTER,
         )
         self.sidebar_status.pack(padx=6)
 
         self.sidebar_new_badge = tk.Label(
-            self, text="", bg="#252525", fg="#ff9800",
+            self, text="", bg="#1e1e1e", fg="#ff9800",
             font=("Segoe UI", 9, "bold"),
         )
         self.sidebar_new_badge.pack(pady=(4, 0))
 
         ttk.Separator(self, orient="horizontal").pack(fill=tk.X, padx=8, pady=(10, 4))
-        tk.Label(self, text="Legenda", bg="#252525", fg="#555555",
+        tk.Label(self, text="Legenda", bg="#1e1e1e", fg="#555555",
                  font=("Segoe UI", 8)).pack()
         
         self.sidebar_sub_status = tk.Label(
-            self, text="", bg="#252525", fg="#555555",
+            self, text="", bg="#1e1e1e", fg="#555555",
             font=("Segoe UI", 8), wraplength=155, justify=tk.CENTER,
         )
         self.sidebar_sub_status.pack(padx=6, pady=(10, 0))
 
         # Spacer
-        tk.Frame(self, bg="#252525").pack(expand=True, fill=tk.BOTH)
+        tk.Frame(self, bg="#1e1e1e").pack(expand=True, fill=tk.BOTH)
 
         version_label = tk.Label(
-            self, text=f"Versão: {VERSION}", bg="#252525", fg="#666666",
+            self, text=f"Versão: {VERSION}", bg="#1e1e1e", fg="#666666",
             font=("Segoe UI", 7)
         )
         version_label.pack(pady=(0, 5))

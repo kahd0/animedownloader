@@ -4,38 +4,54 @@ def apply_styles(root):
     style = ttk.Style(root)
     style.theme_use("clam")
     
+    # Modern Dark Mode Palette
+    bg_surface = "#1e1e1e"
+    bg_dark = "#121212"
+    text_color = "#ffffff"
+    primary_color = "#bb86fc" # Modern accent color
+    secondary_color = "#333333"
+
     # Treeview Styles
     style.configure("Treeview", 
-                    background="#2a2a2a", 
-                    foreground="#ffffff",
-                    fieldbackground="#2a2a2a", 
-                    rowheight=24, 
+                    background=bg_surface, 
+                    foreground=text_color,
+                    fieldbackground=bg_surface, 
+                    rowheight=28, # Increased for better click targets
+                    borderwidth=0,
                     font=("Segoe UI", 10))
     style.configure("Treeview.Heading", 
-                    background="#333333", 
-                    foreground="#ffffff",
-                    font=("Segoe UI", 10, "bold"))
-    style.map("Treeview", background=[("selected", "#1565c0")])
+                    background=bg_dark, 
+                    foreground=text_color,
+                    font=("Segoe UI", 10, "bold"),
+                    borderwidth=0,
+                    padding=6)
+    style.map("Treeview", 
+              background=[("selected", primary_color)], 
+              foreground=[("selected", bg_dark)])
     
     # Entry Styles
     style.configure("TEntry", 
-                    fieldbackground="#2a2a2a", 
-                    foreground="#ffffff",
-                    insertcolor="#ffffff")
+                    fieldbackground=bg_surface, 
+                    foreground=text_color,
+                    insertcolor=text_color,
+                    padding=6)
     
     # Button Styles
     style.configure("TButton", 
-                    background="#333333", 
-                    foreground="#ffffff",
+                    background=bg_surface, 
+                    foreground=text_color,
                     font=("Segoe UI", 10), 
-                    padding=6)
-    style.map("TButton", background=[("active", "#444444")])
+                    padding=6,
+                    borderwidth=0)
+    style.map("TButton", 
+              background=[("active", secondary_color)])
     
     # Scrollbar Styles
     style.configure("TScrollbar", 
-                    background="#333333", 
-                    troughcolor="#1e1e1e",
-                    arrowcolor="#ffffff")
+                    background=bg_surface, 
+                    troughcolor=bg_dark,
+                    arrowcolor=text_color,
+                    borderwidth=0)
 
 def get_log_tags_colors():
     return {

@@ -13,11 +13,11 @@ class ActivityLog(tk.Frame):
         tk.Label(self, text="Log de Atividade", bg="#1e1e1e", fg="#888888",
                  font=("Segoe UI", 9)).pack(anchor=tk.W, padx=2)
 
-        log_frame = tk.Frame(self, bg="#000000", relief=tk.SUNKEN, bd=1)
+        log_frame = tk.Frame(self, bg="#121212", relief=tk.SUNKEN, bd=1)
         log_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
 
         self.log_text = tk.Text(
-            log_frame, bg="#000000", fg="#ffffff", font=("Consolas", 9),
+            log_frame, bg="#121212", fg="#ffffff", font=("Consolas", 9),
             state=tk.DISABLED, wrap=tk.WORD, bd=0, highlightthickness=0,
         )
         log_vsb = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
