@@ -16,7 +16,7 @@ class FeedbackDialog(tk.Toplevel):
 
         self.title("Relatar Problema")
         self.geometry("560x460")
-        self.configure(bg="#2b2b2b")
+        self.configure(bg="#121212")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
@@ -34,43 +34,43 @@ class FeedbackDialog(tk.Toplevel):
         # com expand=True ocupar apenas o espaço restante.
 
         # Botões (fundo)
-        btn_frame = tk.Frame(self, bg="#2b2b2b")
+        btn_frame = tk.Frame(self, bg="#121212")
         btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=14)
 
         ttk.Button(btn_frame, text="Enviar no GitHub", command=self._submit).pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="Cancelar", command=self.destroy).pack(side=tk.LEFT, padx=(8, 0))
         tk.Label(btn_frame, text=f"v{VERSION.lstrip('v')}  •  {platform.system()}",
-                 bg="#2b2b2b", fg="#555555", font=("Segoe UI", 8)).pack(side=tk.RIGHT)
+                 bg="#121212", fg="#555555", font=("Segoe UI", 8)).pack(side=tk.RIGHT)
 
         # Hint de anexo (acima dos botões)
-        self._attach_hint = tk.Label(self, text="", bg="#2b2b2b", fg="#f0a500",
+        self._attach_hint = tk.Label(self, text="", bg="#121212", fg="#f0a500",
                                      font=("Segoe UI", 8), wraplength=526, justify="left")
         self._attach_hint.pack(side=tk.BOTTOM, anchor="w", padx=16)
 
         # Linha de anexo
-        attach_frame = tk.Frame(self, bg="#2b2b2b")
+        attach_frame = tk.Frame(self, bg="#121212")
         attach_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=(10, 0))
 
-        tk.Label(attach_frame, text="Anexo (opcional):", bg="#2b2b2b",
+        tk.Label(attach_frame, text="Anexo (opcional):", bg="#121212",
                  fg="#cccccc", font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
         self._attach_label = tk.Label(attach_frame, text="Nenhum arquivo selecionado",
-                                      bg="#2b2b2b", fg="#888888", font=("Segoe UI", 9))
+                                      bg="#121212", fg="#888888", font=("Segoe UI", 9))
         self._attach_label.pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(attach_frame, text="Selecionar...", command=self._pick_file).pack(side=tk.RIGHT)
 
         # Topo: título
-        tk.Label(self, text="Título", bg="#2b2b2b", fg="#cccccc",
+        tk.Label(self, text="Título", bg="#121212", fg="#cccccc",
                  font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=16, pady=(12, 0))
 
         self._title_var = tk.StringVar()
         ttk.Entry(self, textvariable=self._title_var, font=("Segoe UI", 10)).pack(
             fill=tk.X, padx=16, pady=(4, 0))
 
-        tk.Label(self, text="Descrição", bg="#2b2b2b", fg="#cccccc",
+        tk.Label(self, text="Descrição", bg="#121212", fg="#cccccc",
                  font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=16, pady=(10, 0))
 
         # Área de texto — ocupa o espaço restante
-        text_frame = tk.Frame(self, bg="#2b2b2b")
+        text_frame = tk.Frame(self, bg="#121212")
         text_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=(4, 0))
 
         self._desc = tk.Text(text_frame, bg="#1e1e1e", fg="#f0f0f0",

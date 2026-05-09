@@ -43,7 +43,7 @@ def show_error_dialog(parent, exc: BaseException, context: str = ""):
     frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 8))
 
     text = tk.Text(
-        frame, bg="#2a2a2a", fg="#f0f0f0", font=("Courier New", 9),
+        frame, bg="#1e1e1e", fg="#f0f0f0", font=("Courier New", 9),
         relief=tk.FLAT, wrap=tk.WORD
     )
     sb = ttk.Scrollbar(frame, command=text.yview)

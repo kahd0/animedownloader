@@ -309,7 +309,7 @@ class SettingsDialog(tk.Toplevel):
                 w.destroy()
             sub_enabled_vars.clear()
             for i, src in enumerate(sub_sources):
-                row = tk.Frame(sub_sources_frame, bg="#252525", pady=4)
+                row = tk.Frame(sub_sources_frame, bg="#1e1e1e", pady=4)
                 row.pack(fill=tk.X, pady=2)
                 up_btn = ttk.Button(row, text="↑", width=2, command=lambda idx=i: _move_sub_source(idx, -1))
                 up_btn.pack(side=tk.LEFT, padx=(4, 2))
@@ -322,10 +322,10 @@ class SettingsDialog(tk.Toplevel):
                 var = tk.BooleanVar(value=src.get("enabled", True))
                 sub_enabled_vars.append(var)
                 tk.Checkbutton(row, variable=var, text=src["name"],
-                               bg="#252525", fg="#ffffff", selectcolor="#1e1e1e",
+                               bg="#1e1e1e", fg="#ffffff", selectcolor="#1e1e1e",
                                activebackground="#252525", activeforeground="#ffffff"
                                ).pack(side=tk.LEFT)
-                tk.Label(row, text=f"  (prioridade {i + 1})", bg="#252525",
+                tk.Label(row, text=f"  (prioridade {i + 1})", bg="#1e1e1e",
                          fg="#888888", font=("Segoe UI", 8)).pack(side=tk.LEFT)
                 if src["id"] == "opensubtitles":
                     ttk.Button(row, text="⚙ API Key", command=_show_os_key_dialog).pack(side=tk.RIGHT, padx=8)

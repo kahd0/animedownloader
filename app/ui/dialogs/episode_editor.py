@@ -14,7 +14,7 @@ class EpisodeEditorDialog(tk.Toplevel):
         self.on_success_callback = on_success_callback
 
         self.title("Editar Episódio")
-        self.configure(bg="#1e1e1e")
+        self.configure(bg="#121212")
         self._center_dialog(340, 180)
         self.transient(parent)
         self.grab_set()
@@ -28,17 +28,17 @@ class EpisodeEditorDialog(tk.Toplevel):
         self.geometry(f"{width}x{height}+{x}+{y}")
 
     def _build_ui(self):
-        tk.Label(self, text=self.anime_name, bg="#1e1e1e", fg="#ffffff", 
+        tk.Label(self, text=self.anime_name, bg="#121212", fg="#ffffff", 
                  font=("Segoe UI", 10, "bold"), wraplength=310).pack(pady=(14, 4))
         
-        tk.Label(self, text="Último episódio registrado:", bg="#1e1e1e", 
+        tk.Label(self, text="Último episódio registrado:", bg="#121212", 
                  fg="#aaaaaa", font=("Segoe UI", 9)).pack()
         
         self.spinbox = ttk.Spinbox(self, from_=0, to=99999, width=10, font=("Segoe UI", 11))
         self.spinbox.set(self.current_ep)
         self.spinbox.pack(pady=6)
 
-        btn_frame = tk.Frame(self, bg="#1e1e1e")
+        btn_frame = tk.Frame(self, bg="#121212")
         btn_frame.pack(pady=10)
         
         ttk.Button(btn_frame, text="Salvar", command=self._save).pack(side=tk.LEFT, padx=8)

@@ -34,7 +34,7 @@ class PlaySelectorDialog(tk.Toplevel):
         frame = tk.Frame(self, bg="#1e1e1e")
         frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        self.listbox = tk.Listbox(frame, bg="#2a2a2a", fg="#ffffff", font=("Segoe UI", 10), 
+        self.listbox = tk.Listbox(frame, bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10), 
                              selectbackground="#1565c0", bd=0, highlightthickness=0)
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self.listbox.yview)
         self.listbox.configure(yscrollcommand=vsb.set)

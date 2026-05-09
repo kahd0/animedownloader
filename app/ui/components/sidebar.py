@@ -10,8 +10,9 @@ from ...utils.async_bridge import run_async
 from ...utils.episode_parser import extract_episode_number
 
 class AnimeSidebar(tk.Frame):
-    def __init__(self, parent, **kwargs):
+    def __init__(self, parent, app=None, **kwargs):
         super().__init__(parent, bg="#1e1e1e", width=170, **kwargs)
+        self.app = app
         self.pack_propagate(False)
         self._cover_cache = {}
         self._current_iid = None
@@ -20,38 +21,63 @@ class AnimeSidebar(tk.Frame):
         self._build_ui()
 
     def _build_ui(self):
-        self.cover_label = tk.Label(self, bg="#1e1e1e", cursor="hand2")
-        self.cover_label.pack(pady=(12, 6))
+        # Frame superior para Info
+        self.info_frame = tk.Frame(self, bg="#1e1e1e")
+        self.info_frame.pack(fill=tk.X, pady=(12, 0))
+
+        self.cover_label = tk.Label(self.info_frame, bg="#1e1e1e", cursor="hand2")
+        self.cover_label.pack(pady=(0, 6))
         self.cover_label.bind("<Button-1>", self._on_cover_click)
         self._set_placeholder_cover()
 
         self.sidebar_title = tk.Label(
-            self, text="—", bg="#1e1e1e", fg="#ffffff",
-            font=("Segoe UI", 9, "bold"), wraplength=155, justify=tk.CENTER,
+            self.info_frame, text="—", bg="#1e1e1e", fg="#ffffff",
+            font=("Segoe UI", 10, "bold"), wraplength=200, justify=tk.CENTER,
         )
         self.sidebar_title.pack(padx=6, pady=(0, 4))
 
         self.sidebar_status = tk.Label(
-            self, text="", bg="#1e1e1e", fg="#888888",
-            font=("Segoe UI", 9), wraplength=155, justify=tk.CENTER,
+            self.info_frame, text="", bg="#1e1e1e", fg="#888888",
+            font=("Segoe UI", 9), wraplength=200, justify=tk.CENTER,
         )
         self.sidebar_status.pack(padx=6)
 
         self.sidebar_new_badge = tk.Label(
-            self, text="", bg="#1e1e1e", fg="#ff9800",
+            self.info_frame, text="", bg="#1e1e1e", fg="#ff9800",
             font=("Segoe UI", 9, "bold"),
         )
         self.sidebar_new_badge.pack(pady=(4, 0))
 
-        ttk.Separator(self, orient="horizontal").pack(fill=tk.X, padx=8, pady=(10, 4))
+        ttk.Separator(self, orient="horizontal").pack(fill=tk.X, padx=12, pady=(10, 4))
         tk.Label(self, text="Legenda", bg="#1e1e1e", fg="#555555",
                  font=("Segoe UI", 8)).pack()
         
         self.sidebar_sub_status = tk.Label(
             self, text="", bg="#1e1e1e", fg="#555555",
-            font=("Segoe UI", 8), wraplength=155, justify=tk.CENTER,
+            font=("Segoe UI", 8), wraplength=200, justify=tk.CENTER,
         )
-        self.sidebar_sub_status.pack(padx=6, pady=(10, 0))
+        self.sidebar_sub_status.pack(padx=6, pady=(4, 10))
+
+        ttk.Separator(self, orient="horizontal").pack(fill=tk.X, padx=12, pady=(0, 10))
+
+        # Ações Contextuais
+        self.actions_frame = tk.Frame(self, bg="#1e1e1e")
+        self.actions_frame.pack(fill=tk.BOTH, expand=True, padx=12)
+
+        self.btn_play = ttk.Button(self.actions_frame, text="▶ Play", state=tk.DISABLED, command=lambda: self.app._action_play() if self.app else None)
+        self.btn_play.pack(fill=tk.X, pady=4)
+
+        self.btn_subs = ttk.Button(self.actions_frame, text="🔍 Buscar Legenda", state=tk.DISABLED, command=lambda: self.app._action_force_sub_selected() if self.app else None)
+        self.btn_subs.pack(fill=tk.X, pady=4)
+
+        self.btn_watched = ttk.Button(self.actions_frame, text="✓ Marcar Visto", state=tk.DISABLED, command=lambda: self.app._action_mark_watched() if self.app else None)
+        self.btn_watched.pack(fill=tk.X, pady=4)
+
+        self.btn_edit = ttk.Button(self.actions_frame, text="✏ Editar Episódio", state=tk.DISABLED, command=lambda: self.app._action_edit_episode() if self.app else None)
+        self.btn_edit.pack(fill=tk.X, pady=4)
+
+        self.btn_remove = ttk.Button(self.actions_frame, text="🗑 Remover Anime", state=tk.DISABLED, command=lambda: self.app._action_delete() if self.app else None)
+        self.btn_remove.pack(fill=tk.X, pady=4)
 
         # Spacer
         tk.Frame(self, bg="#1e1e1e").pack(expand=True, fill=tk.BOTH)
@@ -61,6 +87,13 @@ class AnimeSidebar(tk.Frame):
             font=("Segoe UI", 7)
         )
         version_label.pack(pady=(0, 5))
+
+    def _set_button_states(self, state):
+        self.btn_play.config(state=state)
+        self.btn_subs.config(state=state)
+        self.btn_watched.config(state=state)
+        self.btn_edit.config(state=state)
+        self.btn_remove.config(state=state)
 
     def _set_placeholder_cover(self):
         img = Image.new("RGB", (COVER_W, COVER_H), "#333333")
@@ -226,6 +259,7 @@ class AnimeSidebar(tk.Frame):
         self.sidebar_status.config(text="")
         self.sidebar_new_badge.config(text="")
         self.sidebar_sub_status.config(text="")
+        self._set_button_states(tk.DISABLED)
 
     def clear_cache(self):
         self._cover_cache.clear()

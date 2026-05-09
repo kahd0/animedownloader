@@ -47,7 +47,7 @@ class AnimeAdderLogic:
         feed_name = feed_name or name
         dialog = tk.Toplevel(self.parent)
         dialog.title(feed_name)
-        dialog.configure(bg="#1e1e1e")
+        dialog.configure(bg="#121212")
 
         has_feed_label = feed_name != name
         has_range = min_ep > 0 and max_ep > 0
@@ -61,11 +61,11 @@ class AnimeAdderLogic:
         dialog.grab_set()
 
         if has_feed_label:
-            tk.Label(dialog, text=f"Feed: {feed_name}", bg="#1e1e1e", fg="#4ec9b0",
+            tk.Label(dialog, text=f"Feed: {feed_name}", bg="#121212", fg="#4ec9b0",
                      font=("Segoe UI", 9), wraplength=310).pack(pady=(12, 0))
 
         tk.Label(dialog, text=f"Último episódio no histórico: {max_ep}." if max_ep > 0 else "Nenhum histórico encontrado.",
-                 bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10)).pack(pady=(8, 4))
+                 bg="#121212", fg="#ffffff", font=("Segoe UI", 10)).pack(pady=(8, 4))
 
         spinbox = ttk.Spinbox(dialog, from_=0, to=max(max_ep, 9999), width=10, font=("Segoe UI", 11))
         spinbox.set(max(0, max_ep - 2) if max_ep > 0 else 0)
@@ -73,7 +73,7 @@ class AnimeAdderLogic:
 
         if has_range:
             tk.Label(dialog, text=f"⚠ Histórico disponível: ep {min_ep} – {max_ep}",
-                     bg="#1e1e1e", fg="#f0a500", font=("Segoe UI", 8)).pack(pady=(0, 4))
+                     bg="#121212", fg="#f0a500", font=("Segoe UI", 8)).pack(pady=(0, 4))
         
         chosen = {"ep": None}
         def confirm():
@@ -81,7 +81,7 @@ class AnimeAdderLogic:
             except: chosen["ep"] = 0
             dialog.destroy()
             
-        btn_frame = tk.Frame(dialog, bg="#1e1e1e")
+        btn_frame = tk.Frame(dialog, bg="#121212")
         btn_frame.pack(pady=4)
         ttk.Button(btn_frame, text="Confirmar", command=confirm).pack(side=tk.LEFT, padx=8)
         ttk.Button(btn_frame, text="Cancelar", command=dialog.destroy).pack(side=tk.LEFT, padx=8)

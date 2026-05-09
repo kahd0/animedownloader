@@ -17,7 +17,7 @@ class ConfirmClearDialog(tk.Toplevel):
         self.refresh_callback = refresh_callback
 
         self.title("Confirmar Limpeza")
-        self.configure(bg="#1e1e1e")
+        self.configure(bg="#121212")
         self.transient(parent)
         self.grab_set()
 
@@ -32,11 +32,11 @@ class ConfirmClearDialog(tk.Toplevel):
 
     def _build_ui(self):
         tk.Label(self, text=f"Deletar {self.video_count} episódio(s) de '{self.pattern}'?", 
-                 bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10), wraplength=330).pack(pady=(16, 4))
+                 bg="#121212", fg="#ffffff", font=("Segoe UI", 10), wraplength=330).pack(pady=(16, 4))
         tk.Label(self, text="Vídeos e legendas serão removidos permanentemente.", 
-                 bg="#1e1e1e", fg="#888888", font=("Segoe UI", 9)).pack()
+                 bg="#121212", fg="#888888", font=("Segoe UI", 9)).pack()
 
-        btn_frame = tk.Frame(self, bg="#1e1e1e")
+        btn_frame = tk.Frame(self, bg="#121212")
         btn_frame.pack(pady=12)
         ttk.Button(btn_frame, text="Deletar", command=self._confirm).pack(side=tk.LEFT, padx=8)
         ttk.Button(btn_frame, text="Cancelar", command=self.destroy).pack(side=tk.LEFT, padx=8)

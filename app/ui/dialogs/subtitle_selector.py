@@ -63,7 +63,7 @@ class SubtitleSelectorDialog(tk.Toplevel):
         self.selected_var = tk.IntVar(value=0)
         
         for i, s in enumerate(self.subs):
-            row_bg = "#252525" if i % 2 == 0 else "#1e1e1e"
+            row_bg = "#1e1e1e" if i % 2 == 0 else "#121212"
             row = tk.Frame(scrollable_frame, bg=row_bg, pady=4)
             row.pack(fill=tk.X)
             

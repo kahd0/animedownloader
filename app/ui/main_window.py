@@ -76,12 +76,69 @@ class AnimeMonitorApp(tk.Tk):
         self.tree.tag_configure("new_ep",   background="#1b3328")
 
     def _build_ui(self):
-        # Frame Principal Superior (Tabela + Sidebar)
-        top_container = tk.Frame(self, bg="#121212")
-        top_container.pack(fill=tk.BOTH, expand=True, padx=16, pady=(16, 8))
+        # Container Global
+        main_container = tk.Frame(self, bg="#121212")
+        main_container.pack(fill=tk.BOTH, expand=True)
+
+        # --- 1. BARRA DE NAVEGAÇÃO ESQUERDA ---
+        self.nav_frame = tk.Frame(main_container, bg="#1e1e1e", width=70)
+        self.nav_frame.pack(side=tk.LEFT, fill=tk.Y)
+        self.nav_frame.pack_propagate(False)
+
+        nav_buttons = tk.Frame(self.nav_frame, bg="#1e1e1e")
+        nav_buttons.pack(pady=20, fill=tk.X)
+        
+        # Style specifically for Nav Buttons to make them look like tabs
+        style = ttk.Style(self)
+        style.configure("Nav.TButton", padding=8, font=("Segoe UI", 9))
+        
+        ttk.Button(nav_buttons, text="🏠\nHome", command=self._show_home, style="Nav.TButton").pack(fill=tk.X, pady=4, padx=4)
+        ttk.Button(nav_buttons, text="📜\nLogs", command=self._show_logs, style="Nav.TButton").pack(fill=tk.X, pady=4, padx=4)
+        
+        # Spacer
+        tk.Frame(self.nav_frame, bg="#1e1e1e").pack(fill=tk.BOTH, expand=True)
+        
+        # Bottom nav actions
+        bottom_nav = tk.Frame(self.nav_frame, bg="#1e1e1e")
+        bottom_nav.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
+        ttk.Button(bottom_nav, text="📁\nPasta", command=self._action_open_folder, style="Nav.TButton").pack(fill=tk.X, pady=4, padx=4)
+        ttk.Button(bottom_nav, text="⚑\nBug", command=self._action_report_feedback, style="Nav.TButton").pack(fill=tk.X, pady=4, padx=4)
+        ttk.Button(bottom_nav, text="⚙\nConf", command=self._action_open_settings, style="Nav.TButton").pack(fill=tk.X, pady=4, padx=4)
+
+        # --- ÁREA CENTRAL (Conteúdo Dinâmico) ---
+        self.content_area = tk.Frame(main_container, bg="#121212")
+        self.content_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # --- VIEW: HOME (Minha Lista) ---
+        self.view_home = tk.Frame(self.content_area, bg="#121212")
+        
+        # 2. CABEÇALHO (Top Bar)
+        header_frame = tk.Frame(self.view_home, bg="#1e1e1e", height=60)
+        header_frame.pack(side=tk.TOP, fill=tk.X)
+        header_frame.pack_propagate(False)
+
+        header_inner = tk.Frame(header_frame, bg="#1e1e1e")
+        header_inner.pack(fill=tk.BOTH, expand=True, padx=20, pady=12)
+
+        # Ações Globais (Esquerda)
+        ttk.Button(header_inner, text="🔄 Verificar Agora", command=self._action_refresh).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(header_inner, text="📁 Organizar Downloads", command=self._action_organize).pack(side=tk.LEFT, padx=0)
+
+        # Buscar/Adicionar (Direita)
+        ttk.Button(header_inner, text="Adicionar", command=self._add_anime).pack(side=tk.RIGHT, padx=(8, 0))
+        self.entry = ttk.Entry(header_inner, font=("Segoe UI", 11), width=35)
+        self.entry.pack(side=tk.RIGHT, ipady=4)
+        self.entry.bind("<Return>", lambda e: self._add_anime())
+        self.entry.bind("<KeyRelease>", self._on_entry_key)
+        self.entry.bind("<FocusOut>", lambda e: self.after(150, self._close_suggestions))
+        tk.Label(header_inner, text="🔍 Anime:", bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10)).pack(side=tk.RIGHT, padx=8)
+
+        # 3. CORPO (Tabela + Sidebar Direita)
+        body_frame = tk.Frame(self.view_home, bg="#121212")
+        body_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
 
         # Tabela
-        table_frame = tk.Frame(top_container, bg="#121212")
+        table_frame = tk.Frame(body_frame, bg="#121212")
         table_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         cols = ("ID", "Anime", "Último Ep", "Resolução", "Último Download", "Status")
@@ -104,49 +161,26 @@ class AnimeMonitorApp(tk.Tk):
         self.tree.bind("<Button-3>", self._show_context_menu)
         self.tree.bind("<Double-Button-1>", lambda e: self._action_edit_episode())
 
-        # Sidebar Component
-        self.sidebar = AnimeSidebar(top_container)
-        self.sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(16, 0))
+        # Sidebar Component (Direita)
+        self.sidebar = AnimeSidebar(body_frame, app=self)
+        self.sidebar.pack(side=tk.RIGHT, fill=tk.Y, padx=(20, 0))
 
-        # Input Area
-        input_frame = tk.Frame(self, bg="#121212")
-        input_frame.pack(fill=tk.X, padx=16, pady=8)
+        # --- VIEW: LOGS ---
+        self.view_logs = tk.Frame(self.content_area, bg="#121212")
+        tk.Label(self.view_logs, text="📜 Logs do Sistema", bg="#121212", fg="#ffffff", font=("Segoe UI", 16, "bold")).pack(anchor=tk.W, padx=20, pady=(20, 10))
+        self.activity_log = ActivityLog(self.view_logs)
+        self.activity_log.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 20))
 
-        self.entry = ttk.Entry(input_frame, font=("Segoe UI", 11))
-        self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
-        self.entry.bind("<Return>", lambda e: self._add_anime())
-        self.entry.bind("<KeyRelease>", self._on_entry_key)
-        self.entry.bind("<FocusOut>", lambda e: self.after(150, self._close_suggestions))
+        # Inicializa exibindo a Home
+        self._show_home()
 
-        ttk.Button(input_frame, text="Adicionar", command=self._add_anime).pack(side=tk.LEFT, padx=(16, 0))
+    def _show_home(self):
+        self.view_logs.pack_forget()
+        self.view_home.pack(fill=tk.BOTH, expand=True)
 
-        # Action Buttons
-        action_frame = tk.Frame(self, bg="#121212")
-        action_frame.pack(fill=tk.X, padx=16, pady=8)
-
-        left_actions = tk.Frame(action_frame, bg="#121212")
-        left_actions.pack(side=tk.LEFT)
-
-        right_actions = tk.Frame(action_frame, bg="#121212")
-        right_actions.pack(side=tk.RIGHT)
-
-        ttk.Button(left_actions, text="Verificar Agora",    command=self._action_refresh).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(left_actions, text="Organizar",          command=self._action_organize).pack(side=tk.LEFT, padx=8)
-        ttk.Button(left_actions, text="Buscar Legendas",    command=self._action_download_subs).pack(side=tk.LEFT, padx=8)
-        
-        # Spacer frame to act as a separator since ttk.Separator can be tricky on dark mode
-        tk.Frame(left_actions, bg="#333333", width=1).pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=4)
-        
-        ttk.Button(left_actions, text="▶ Play",             command=self._action_play).pack(side=tk.LEFT, padx=8)
-        ttk.Button(left_actions, text="Remover Selecionado",command=self._action_delete).pack(side=tk.LEFT, padx=8)
-
-        ttk.Button(right_actions, text="⚑ Relatar Problema", command=self._action_report_feedback).pack(side=tk.LEFT, padx=8)
-        ttk.Button(right_actions, text="📁 Abrir Pasta",     command=self._action_open_folder).pack(side=tk.LEFT, padx=8)
-        ttk.Button(right_actions, text="⚙ Configurações",    command=self._action_open_settings).pack(side=tk.LEFT, padx=(8, 0))
-
-        # Log Component
-        self.activity_log = ActivityLog(self, height=160)
-        self.activity_log.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=(8, 16))
+    def _show_logs(self):
+        self.view_home.pack_forget()
+        self.view_logs.pack(fill=tk.BOTH, expand=True)
 
     def log(self, message: str, color: str = "white"):
         self.activity_log.log(message, color)

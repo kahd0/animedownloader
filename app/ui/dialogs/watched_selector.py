@@ -21,7 +21,7 @@ class WatchedSelectorDialog(tk.Toplevel):
 
         self.title(f"Marcar Visto - {anime_name}")
         self.geometry("500x450")
-        self.configure(bg="#1e1e1e")
+        self.configure(bg="#121212")
         self.transient(parent)
         self.grab_set()
 
@@ -39,15 +39,15 @@ class WatchedSelectorDialog(tk.Toplevel):
 
     def _build_ui(self):
         tk.Label(self, text="Selecione os episódios que você já assistiu:", 
-                 bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 10, "bold")).pack(pady=10)
+                 bg="#121212", fg="#ffffff", font=("Segoe UI", 10, "bold")).pack(pady=10)
 
-        frame = tk.Frame(self, bg="#1e1e1e")
+        frame = tk.Frame(self, bg="#121212")
         frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
 
         # Usar Checkboxes em uma lista scrollable
-        canvas = tk.Canvas(frame, bg="#1e1e1e", highlightthickness=0)
+        canvas = tk.Canvas(frame, bg="#121212", highlightthickness=0)
         vsb = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
-        self.scrollable_frame = tk.Frame(canvas, bg="#1e1e1e")
+        self.scrollable_frame = tk.Frame(canvas, bg="#121212")
 
         self.scrollable_frame.bind(
             "<Configure>",
@@ -67,14 +67,14 @@ class WatchedSelectorDialog(tk.Toplevel):
             var = tk.BooleanVar(value=False)
             self.check_vars[filename] = var
             
-            row = tk.Frame(self.scrollable_frame, bg="#1e1e1e")
+            row = tk.Frame(self.scrollable_frame, bg="#121212")
             row.pack(fill=tk.X, pady=2)
             
-            cb = tk.Checkbutton(row, text=filename, variable=var, bg="#1e1e1e", fg="#ffffff", 
+            cb = tk.Checkbutton(row, text=filename, variable=var, bg="#121212", fg="#ffffff", 
                                selectcolor="#1e1e1e", activebackground="#1e1e1e", activeforeground="#ffffff")
             cb.pack(side=tk.LEFT, anchor=tk.W)
 
-        btn_frame = tk.Frame(self, bg="#1e1e1e")
+        btn_frame = tk.Frame(self, bg="#121212")
         btn_frame.pack(pady=15)
         
         ttk.Button(btn_frame, text="Confirmar", command=self._confirm).pack(side=tk.LEFT, padx=8)
