@@ -23,6 +23,81 @@ async def init_db():
                 value TEXT
             )
         """)
+        # v2 tables
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS releases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                anime_id INTEGER,
+                episode INTEGER,
+                title TEXT,
+                magnet TEXT,
+                torrent_hash TEXT,
+                resolution TEXT,
+                source TEXT,
+                score INTEGER DEFAULT 0,
+                created_at TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS anime_aliases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                anime_id INTEGER,
+                alias TEXT,
+                UNIQUE(anime_id, alias)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS subtitle_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                anime_id INTEGER,
+                episode INTEGER,
+                provider TEXT,
+                language TEXT,
+                filename TEXT,
+                file_hash TEXT UNIQUE,
+                created_at TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS translation_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text_hash TEXT UNIQUE,
+                original TEXT,
+                translated TEXT,
+                provider TEXT,
+                created_at TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS glossary (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_term TEXT NOT NULL UNIQUE,
+                target_term TEXT NOT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                anime_id INTEGER,
+                episode INTEGER,
+                status TEXT DEFAULT 'pending',
+                retries INTEGER DEFAULT 0,
+                error TEXT,
+                payload TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                level TEXT,
+                source TEXT,
+                message TEXT,
+                created_at TEXT
+            )
+        """)
         for col, definition in [
             ("last_download_date", "TEXT DEFAULT NULL"),
             ("cover_url",          "TEXT DEFAULT NULL"),
@@ -137,5 +212,180 @@ async def clear_new_episode_flag(anime_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE monitored SET has_new_episode = 0 WHERE id = ?", (anime_id,)
+        )
+        await db.commit()
+
+
+# ---------- v2: releases ----------
+
+async def save_release(anime_id: int, episode: int, title: str, magnet: str,
+                        torrent_hash: str | None, resolution: str, source: str, score: int = 0):
+    now = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO releases (anime_id, episode, title, magnet, torrent_hash, resolution, source, score, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (anime_id, episode, title, magnet, torrent_hash, resolution, source, score, now),
+        )
+        await db.commit()
+
+
+async def get_releases(anime_id: int) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT * FROM releases WHERE anime_id = ? ORDER BY created_at DESC", (anime_id,)
+        ) as cursor:
+            return await cursor.fetchall()
+
+
+# ---------- v2: aliases ----------
+
+async def add_alias(anime_id: int, alias: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute(
+                "INSERT INTO anime_aliases (anime_id, alias) VALUES (?, ?)", (anime_id, alias)
+            )
+            await db.commit()
+        except Exception:
+            pass
+
+
+async def get_aliases(anime_id: int) -> list[str]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT alias FROM anime_aliases WHERE anime_id = ?", (anime_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows]
+
+
+# ---------- v2: subtitle cache ----------
+
+async def get_cached_subtitle(anime_id: int, episode: int, language: str) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT provider, language, filename, file_hash FROM subtitle_cache
+               WHERE anime_id = ? AND episode = ? AND language = ?
+               ORDER BY id DESC LIMIT 1""",
+            (anime_id, episode, language),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return {"provider": row[0], "language": row[1], "filename": row[2], "file_hash": row[3]}
+
+
+async def save_subtitle_cache(anime_id: int, episode: int, provider: str,
+                               language: str, filename: str, file_hash: str):
+    now = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute(
+                """INSERT INTO subtitle_cache (anime_id, episode, provider, language, filename, file_hash, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (anime_id, episode, provider, language, filename, file_hash, now),
+            )
+            await db.commit()
+        except Exception:
+            pass
+
+
+# ---------- v2: translation memory ----------
+
+async def get_translation(text_hash: str) -> str | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT translated FROM translation_memory WHERE text_hash = ?", (text_hash,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
+async def save_translation(text_hash: str, original: str, translated: str, provider: str):
+    now = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute(
+                """INSERT INTO translation_memory (text_hash, original, translated, provider, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (text_hash, original, translated, provider, now),
+            )
+            await db.commit()
+        except Exception:
+            pass
+
+
+# ---------- v2: glossary ----------
+
+async def get_glossary() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id, source_term, target_term FROM glossary") as cursor:
+            rows = await cursor.fetchall()
+            return [{"id": r[0], "source": r[1], "target": r[2]} for r in rows]
+
+
+async def upsert_glossary_term(source_term: str, target_term: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO glossary (source_term, target_term) VALUES (?, ?)",
+            (source_term, target_term),
+        )
+        await db.commit()
+
+
+async def delete_glossary_term(term_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM glossary WHERE id = ?", (term_id,))
+        await db.commit()
+
+
+# ---------- v2: jobs ----------
+
+async def enqueue_job(job_type: str, anime_id: int | None = None,
+                       episode: int | None = None, payload: str | None = None) -> int:
+    now = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """INSERT INTO jobs (type, anime_id, episode, status, payload, created_at, updated_at)
+               VALUES (?, ?, ?, 'pending', ?, ?, ?)""",
+            (job_type, anime_id, episode, payload, now, now),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def update_job_status(job_id: int, status: str, error: str | None = None):
+    now = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE jobs SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+            (status, error, now, job_id),
+        )
+        await db.commit()
+
+
+async def get_active_jobs() -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT * FROM jobs WHERE status IN ('pending', 'running') ORDER BY created_at"
+        ) as cursor:
+            return await cursor.fetchall()
+
+
+async def get_failed_jobs() -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT * FROM jobs WHERE status = 'failed' AND retries < 3 ORDER BY created_at"
+        ) as cursor:
+            return await cursor.fetchall()
+
+
+async def increment_job_retry(job_id: int):
+    now = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE jobs SET retries = retries + 1, status = 'pending', updated_at = ? WHERE id = ?",
+            (now, job_id),
         )
         await db.commit()

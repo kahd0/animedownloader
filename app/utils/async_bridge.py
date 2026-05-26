@@ -1,43 +1,62 @@
 import asyncio
 import threading
 
+from PySide6.QtCore import QObject, Signal, Qt
+
 _loop = asyncio.new_event_loop()
 threading.Thread(target=_loop.run_forever, daemon=True).start()
 
-app_ref = None
 
-def set_app_ref(app):
-    global app_ref
-    app_ref = app
+class _Bridge(QObject):
+    _callback_ready = Signal(object, object)
 
-def stop_loop():
-    if _loop.is_running():
-        _loop.call_soon_threadsafe(_loop.stop)
+    def __init__(self):
+        super().__init__()
+        self._callback_ready.connect(self._dispatch, Qt.QueuedConnection)
+
+    def _dispatch(self, callback, result):
+        if callback:
+            try:
+                callback(result)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
+
+_bridge: _Bridge | None = None
+
+
+def _get_bridge() -> "_Bridge":
+    global _bridge
+    if _bridge is None:
+        _bridge = _Bridge()
+    return _bridge
+
 
 def run_async(coro, on_done=None):
+    bridge = _get_bridge()  # must be captured on the main Qt thread
+
     def _callback(future):
         try:
             result = future.result()
         except Exception as e:
             result = e
-            if not on_done and app_ref:
-                app_ref.after(0, lambda exc=e: _report_unhandled(exc))
-        if on_done and app_ref:
-            app_ref.after(0, lambda: on_done(result))
+        bridge._callback_ready.emit(on_done, result)
 
     future = asyncio.run_coroutine_threadsafe(coro, _loop)
     future.add_done_callback(_callback)
     return future
 
-def _report_unhandled(exc: Exception):
-    if not app_ref:
-        return
-    try:
-        from app.ui.dialogs.error_reporter import show_error_dialog
-        show_error_dialog(app_ref, exc, "Erro em operação assíncrona")
-    except Exception:
-        import traceback
-        traceback.print_exc()
+
+def stop_loop():
+    if _loop.is_running():
+        _loop.call_soon_threadsafe(_loop.stop)
+
 
 def get_event_loop():
     return _loop
+
+
+# Legacy compat — no-op in PySide6 (app ref not needed)
+def set_app_ref(app):
+    pass

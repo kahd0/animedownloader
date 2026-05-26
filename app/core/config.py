@@ -101,6 +101,20 @@ def get_subtitle_sources() -> list[dict]:
     except Exception:
         return list(_DEFAULT_SUBTITLE_SOURCES)
 
+
+def get_qbittorrent_config() -> dict:
+    return {
+        "host": get_setting("qbt_host", "localhost"),
+        "port": int(get_setting("qbt_port", "8080") or "8080"),
+        "username": get_setting("qbt_user", ""),
+        "password": get_setting("qbt_pass", ""),
+    }
+
+
+def get_gemini_api_key() -> str:
+    return get_setting("gemini_api_key", "")
+
+
 # Inicializa o cache
 load_settings_sync()
 

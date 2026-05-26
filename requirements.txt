@@ -2,3 +2,8 @@ httpx
 aiosqlite
 pystray
 Pillow
+PySide6
+pysubs2
+watchdog
+rapidfuzz
+qbittorrent-api
