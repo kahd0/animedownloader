@@ -19,24 +19,21 @@ def save(subs, path: str, encoding: str = "utf-8-sig") -> None:
 
 
 def extract_dialogue_texts(subs) -> list[str]:
-    """Return the plain text of every Dialogue line (tags stripped)."""
+    """Return the raw ASS text of every Dialogue line (tags intact)."""
     texts = []
     for line in subs:
         if line.type == "Dialogue":
-            texts.append(line.plaintext)
+            texts.append(line.text)
     return texts
 
 
 def apply_translated_texts(subs, texts: list[str]):
-    """Apply translated text back to Dialogue lines, preserving structure."""
+    """Apply translated text back to Dialogue lines (tags already restored via protect/restore)."""
     idx = 0
     for line in subs:
         if line.type == "Dialogue":
             if idx < len(texts):
-                # Replace text while keeping all tags intact
-                original_text = line.text
-                translated_plain = texts[idx]
-                line.text = _merge_tags_with_translation(original_text, translated_plain)
+                line.text = texts[idx]
                 idx += 1
     return subs
 
@@ -53,12 +50,7 @@ def protect_tags(text: str) -> tuple[str, list[str]]:
         return token
 
     protected = _TAG_RE.sub(_replace, text)
-    protected = _NEWLINE_RE.sub(
-        lambda m: _replace(m),  # type: ignore[arg-type]
-        protected,
-    )
-    # Fix: re-apply newline replacement properly
-    # Re-do: combine both into one pass
+    protected = _NEWLINE_RE.sub(_replace, protected)
     return protected, tokens
 
 
@@ -69,25 +61,6 @@ def restore_tags(text: str, tokens: list[str]) -> str:
         return tokens[idx] if idx < len(tokens) else m.group(0)
 
     return _PLACEHOLDER_RE.sub(_restore, text)
-
-
-def _merge_tags_with_translation(original_text: str, translated_plain: str) -> str:
-    """Keep leading/trailing tags from original, insert translated text in middle."""
-    # Extract leading tags
-    leading = ""
-    m_lead = re.match(r"^(\{[^}]*\})+", original_text)
-    if m_lead:
-        leading = m_lead.group(0)
-
-    # Extract trailing tags
-    trailing = ""
-    m_trail = re.search(r"(\{[^}]*\})+$", original_text)
-    if m_trail:
-        trailing = m_trail.group(0)
-
-    # Replace soft line breaks with ASS \N
-    body = translated_plain.replace("\n", "\\N")
-    return f"{leading}{body}{trailing}"
 
 
 def has_ass_content(path: str) -> bool:

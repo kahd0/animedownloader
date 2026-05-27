@@ -178,6 +178,8 @@ def _state_display(state: str) -> tuple[str, str]:
 class DownloadsScreen(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._provider = None
+        self._provider_cfg: dict | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -232,13 +234,16 @@ class DownloadsScreen(QWidget):
             from app.providers.torrents.qbittorrent import QBittorrentProvider
             from app.core.config import get_qbittorrent_config
             cfg = get_qbittorrent_config()
-            provider = QBittorrentProvider(
-                host=cfg["host"], port=cfg["port"],
-                username=cfg["username"], password=cfg["password"],
-            )
-            torrents = await provider.get_all_torrents()
+            if self._provider is None or self._provider_cfg != cfg:
+                self._provider_cfg = cfg
+                self._provider = QBittorrentProvider(
+                    host=cfg["host"], port=cfg["port"],
+                    username=cfg["username"], password=cfg["password"],
+                )
+            torrents = await self._provider.get_all_torrents()
             return {"connected": True, "torrents": torrents or []}
         except Exception as e:
+            self._provider = None
             return {"connected": False, "torrents": [], "error": str(e)}
 
     def _on_data(self, result) -> None:

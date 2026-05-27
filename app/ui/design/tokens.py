@@ -69,7 +69,6 @@ DUR_SLOW    = 400
 PROVIDER_COLORS = {
     "SubsPlease":    ACCENT,
     "Erai-raws":     DOWNLOADING,
-    "AnimeTosho":    SUCCESS,
     "OpenSubtitles": TRANSLATING,
     "Jimaku":        WARNING,
     "Generic":       TEXT_MUTED,

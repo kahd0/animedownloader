@@ -5,8 +5,7 @@ import os
 from app.core import database as db
 from app.services import ass_processor
 
-
-_BATCH_SIZE = 50
+_GLOSS_PLACEHOLDER_FMT = "⟪G{}⟫"
 
 
 class TranslationService:
@@ -48,11 +47,10 @@ class TranslationService:
                 translated_lines.append(None)
                 to_translate_indices.append(i)
 
-        # Translate missing lines in batches
         if to_translate_indices:
             missing_texts = [protected[i] for i in to_translate_indices]
             provider = self._get_provider()
-            translated_missing = await _translate_in_batches(provider, missing_texts)
+            translated_missing = await provider.translate_batch(missing_texts)
 
             for idx, translated in zip(to_translate_indices, translated_missing):
                 translated_lines[idx] = translated
@@ -84,31 +82,27 @@ def _build_provider():
     return GoogleTranslateProvider()
 
 
-async def _translate_in_batches(provider, texts: list[str]) -> list[str]:
-    import asyncio
-    results: list[str] = []
-    for i in range(0, len(texts), _BATCH_SIZE):
-        chunk = texts[i : i + _BATCH_SIZE]
-        translated = await provider.translate_batch(chunk)
-        results.extend(translated)
-        if i + _BATCH_SIZE < len(texts):
-            await asyncio.sleep(0.3)
-    return results
-
-
 def _apply_glossary_pre(texts: list[str], glossary: list[dict]) -> list[str]:
-    """Apply glossary substitutions before translation (protect terms)."""
+    """Replace glossary source terms with reversible placeholders before translation."""
     if not glossary:
         return texts
+    # Sort longest first so multi-word terms are replaced before their substrings
+    ordered = sorted(enumerate(glossary), key=lambda x: len(x[1]["source"]), reverse=True)
     result = []
     for text in texts:
-        for entry in glossary:
-            # Protect source terms with placeholder to prevent translation
-            text = text.replace(entry["source"], entry["target"])
+        for i, entry in ordered:
+            text = text.replace(entry["source"], _GLOSS_PLACEHOLDER_FMT.format(i))
         result.append(text)
     return result
 
 
 def _apply_glossary_post(texts: list[str], glossary: list[dict]) -> list[str]:
-    """Apply any post-translation glossary corrections."""
-    return texts
+    """Restore glossary placeholders to their target terms after translation."""
+    if not glossary:
+        return texts
+    result = []
+    for text in texts:
+        for i, entry in enumerate(glossary):
+            text = text.replace(_GLOSS_PLACEHOLDER_FMT.format(i), entry["target"])
+        result.append(text)
+    return result

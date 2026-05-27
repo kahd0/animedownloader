@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal, QSize
-from PySide6.QtGui import QColor, QPainter, QFont, QPixmap
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QButtonGroup, QSizePolicy,
@@ -131,104 +131,40 @@ class _StatsStrip(QWidget):
         self._labels["jobs"].setText(str(jobs))
 
 
-class _HeroBanner(QWidget):
-    """Top hero banner showing latest downloaded or newest anime."""
+async def _compute_disk_watch_counts(animes: list) -> dict:
+    """Return {anime_id: unwatched_count} based on files actually present on disk."""
+    import asyncio
+    import os
+    from app.core.config import get_final_dir
+    from app.core.naming import matches_pattern
+    from app.utils.episode_parser import extract_episode_number
 
-    play_clicked    = Signal(int)
-    watched_clicked = Signal(int)
+    final_dir = get_final_dir()
+    if not os.path.isdir(final_dir):
+        return {}
+    try:
+        files = await asyncio.to_thread(os.listdir, final_dir)
+    except Exception:
+        return {}
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(220)
-        self._anime_id = None
-        self._cover_pixmap: QPixmap | None = None
+    exts = {".mkv", ".mp4", ".avi", ".mov", ".wmv"}
+    video_eps = [
+        (f, extract_episode_number(f))
+        for f in files
+        if os.path.splitext(f)[1].lower() in exts
+    ]
+    video_eps = [(f, ep) for f, ep in video_eps if ep is not None]
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(t.CONTENT_PAD_H, t.SP8, t.CONTENT_PAD_H, t.SP8)
-        layout.setSpacing(t.SP6)
-
-        right = QWidget()
-        right.setStyleSheet("background: transparent;")
-        rl = QVBoxLayout(right)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(t.SP3)
-
-        self._title_lbl = QLabel("—")
-        self._title_lbl.setStyleSheet(f"color: {t.TEXT_PRIMARY}; font-size: 32px; font-weight: 700; background: transparent;")
-        self._title_lbl.setWordWrap(True)
-
-        self._meta_lbl = QLabel("")
-        self._meta_lbl.setStyleSheet(f"color: {t.TEXT_SECONDARY}; font-size: 13px; background: transparent;")
-
-        btn_row = QWidget()
-        btn_row.setStyleSheet("background: transparent;")
-        brl = QHBoxLayout(btn_row)
-        brl.setContentsMargins(0, 0, 0, 0)
-        brl.setSpacing(t.SP3)
-
-        self._play_btn = QPushButton("▶  ASSISTIR")
-        self._play_btn.setProperty("class", "primary")
-        self._play_btn.setFixedHeight(40)
-        self._play_btn.setFixedWidth(160)
-        self._play_btn.clicked.connect(lambda: self._anime_id and self.play_clicked.emit(self._anime_id))
-
-        self._watched_btn = QPushButton("✓  JÁ VISTO")
-        self._watched_btn.setFixedHeight(40)
-        self._watched_btn.setFixedWidth(140)
-        self._watched_btn.clicked.connect(lambda: self._anime_id and self.watched_clicked.emit(self._anime_id))
-
-        brl.addWidget(self._play_btn)
-        brl.addWidget(self._watched_btn)
-        brl.addStretch(1)
-
-        rl.addStretch(1)
-        rl.addWidget(self._title_lbl)
-        rl.addWidget(self._meta_lbl)
-        rl.addWidget(btn_row)
-        rl.addStretch(1)
-
-        layout.addWidget(right, 1)
-
-    def set_anime(self, anime_data: tuple, cover_pixmap: QPixmap | None = None) -> None:
-        _, title_pattern, last_ep, res, last_date, _, official_title, airing, has_new, last_dl = anime_data
-        self._anime_id = anime_data[0]
-        self._cover_pixmap = cover_pixmap
-        name = official_title or title_pattern
-        self._title_lbl.setText(name)
-        status = "Em Exibição" if airing == "Currently Airing" else "Finalizado"
-        self._meta_lbl.setText(f"EP {last_ep}  ·  {status}  ·  {res}")
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-
-        # Blurred cover background
-        if self._cover_pixmap:
-            scaled = self._cover_pixmap.scaled(
-                self.width(), self.height(),
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            x = (self.width() - scaled.width()) // 2
-            y = (self.height() - scaled.height()) // 2
-            painter.setOpacity(0.3)
-            painter.drawPixmap(x, y, scaled)
-            painter.setOpacity(1.0)
-
-        # Left-to-right fade to deep background
-        from PySide6.QtGui import QLinearGradient
-        grad = QLinearGradient(0, 0, self.width(), 0)
-        grad.setColorAt(0.0, QColor(t.BG_DEEP))
-        grad.setColorAt(0.4, QColor(0, 0, 0, 180))
-        grad.setColorAt(1.0, QColor(t.BG_DEEP))
-        painter.fillRect(self.rect(), grad)
-
-        # Bottom fade
-        grad2 = QLinearGradient(0, 0, 0, self.height())
-        grad2.setColorAt(0.6, QColor(0, 0, 0, 0))
-        grad2.setColorAt(1.0, QColor(t.BG_DEEP))
-        painter.fillRect(self.rect(), grad2)
+    result = {}
+    for anime in animes:
+        anime_id = anime[0]
+        title_pat = anime[1]
+        last_watched = int(anime[2] or 0)
+        result[anime_id] = sum(
+            1 for f, ep in video_eps
+            if ep > last_watched and matches_pattern(f, title_pat)
+        )
+    return result
 
 
 class DashboardScreen(QWidget):
@@ -239,20 +175,38 @@ class DashboardScreen(QWidget):
         self._filter = "all"
         self._card_widgets: list = []
         self._anime_data: list[tuple] = []
+        self._pending_counts: dict = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-
-        # Hero banner
-        self._hero = _HeroBanner(self)
-        root.addWidget(self._hero)
 
         # Stats + filters section
         mid = QWidget()
         ml = QVBoxLayout(mid)
         ml.setContentsMargins(t.CONTENT_PAD_H, t.SP4, t.CONTENT_PAD_H, 0)
         ml.setSpacing(t.SP4)
+
+        # Top bar: title + add button
+        top_bar = QWidget()
+        tbl = QHBoxLayout(top_bar)
+        tbl.setContentsMargins(0, 0, 0, 0)
+        tbl.setSpacing(t.SP4)
+
+        dash_title = QLabel("Dashboard")
+        dash_title.setStyleSheet(
+            f"color: {t.TEXT_PRIMARY}; font-size: 22px; font-weight: 700; background: transparent;"
+        )
+        tbl.addWidget(dash_title)
+        tbl.addStretch(1)
+
+        add_btn = QPushButton("+ Adicionar")
+        add_btn.setProperty("class", "primary")
+        add_btn.setFixedHeight(36)
+        add_btn.clicked.connect(self._on_add_clicked)
+        tbl.addWidget(add_btn)
+
+        ml.addWidget(top_bar)
 
         self._stats = _StatsStrip(self)
         ml.addWidget(self._stats)
@@ -286,6 +240,10 @@ class DashboardScreen(QWidget):
         # Load data on show
         QTimer.singleShot(0, self.refresh)
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.refresh()
+
     # ── Public ──────────────────────────────────────────────────────────────
 
     def refresh(self) -> None:
@@ -298,17 +256,23 @@ class DashboardScreen(QWidget):
     # ── Internal ────────────────────────────────────────────────────────────
 
     async def _fetch_data(self):
-        from app.core.database import get_monitored_animes
-        return await get_monitored_animes()
+        from app.core.database import get_monitored_animes, get_all_pending_counts
+        animes = await get_monitored_animes()
+        counts = await get_all_pending_counts()
+        disk_counts = await _compute_disk_watch_counts(animes or [])
+        for anime_id, watch_count in disk_counts.items():
+            counts.setdefault(anime_id, {})["watch_count"] = watch_count
+        return animes, counts
 
     def _on_data(self, result) -> None:
         if isinstance(result, Exception):
             return
 
-        self._anime_data = result or []
+        animes, counts = result
+        self._anime_data = animes or []
+        self._pending_counts = counts or {}
         self._rebuild_grid()
         self._update_stats()
-        self._update_hero()
 
     def _rebuild_grid(self) -> None:
         from app.ui.components.anime_card import AnimeCard
@@ -328,7 +292,8 @@ class DashboardScreen(QWidget):
         self._empty_label.hide()
 
         for anime in self._anime_data:
-            card = AnimeCard(anime, self._grid_container)
+            pending = self._pending_counts.get(anime[0], {})
+            card = AnimeCard(anime, self._grid_container, pending_counts=pending)
             card.clicked.connect(self._on_card_click)
             self._grid_layout.addWidget(card)
             self._card_widgets.append(card)
@@ -367,43 +332,17 @@ class DashboardScreen(QWidget):
         new_count = sum(1 for a in self._anime_data if a[8])
         self._stats.update_stats(total, 0, new_count, 0)
 
-    def _update_hero(self) -> None:
-        if not self._anime_data:
-            return
-        # Prefer anime with new episode
-        hero_anime = next((a for a in self._anime_data if a[8]), self._anime_data[0])
-        self._hero.set_anime(hero_anime)
-        # Load hero cover async
-        cover_path = self._get_cover_path(hero_anime)
-        if cover_path:
-            run_async(self._load_cover(cover_path), on_done=lambda px: self._set_hero_cover(px))
-
-    async def _load_cover(self, path: str):
-        from app.ui.utils.image_cache import get_cover_pixmap
-        return get_cover_pixmap(path, 400, 220)
-
-    def _set_hero_cover(self, result) -> None:
-        if isinstance(result, Exception) or result is None:
-            return
-        self._hero._cover_pixmap = result
-        self._hero.update()
-
-    def _get_cover_path(self, anime: tuple) -> str | None:
-        import os, re
-        from app.core.config import COVERS_DIR as COVER_DIR
-        safe = re.sub(r'[^\w\s-]', '', anime[1]).strip().lower().replace(' ', '_')
-        for ext in (".jpg", ".png", ".jpeg", ".webp"):
-            path = os.path.join(COVER_DIR, safe + ext)
-            if os.path.exists(path):
-                return path
-        return None
-
     def _on_card_click(self, anime_id: int) -> None:
         from app.ui.components.detail_panel import DetailPanel
         anime = next((a for a in self._anime_data if a[0] == anime_id), None)
         if anime:
             panel = DetailPanel(anime, self.window())
             panel.exec()
+
+    def _on_add_clicked(self) -> None:
+        window = self.window()
+        if hasattr(window, "show_add_anime"):
+            window.show_add_anime()
 
     def paintEvent(self, event):
         painter = QPainter(self)

@@ -87,6 +87,13 @@ class QBittorrentProvider(TorrentProvider):
 
         return await asyncio.to_thread(_completed)
 
+    async def remove_torrent(self, torrent_hash: str, delete_files: bool = False) -> None:
+        def _remove():
+            client = self._get_client()
+            client.torrents_delete(delete_files=delete_files, torrent_hashes=torrent_hash)
+
+        await asyncio.to_thread(_remove)
+
     async def get_all_torrents(self) -> list[dict[str, Any]]:
         """Return all torrents with full status info for the Downloads screen."""
         def _all():

@@ -64,6 +64,11 @@ class AnimeMonitorApp(QMainWindow):
         # Start backend
         QTimer.singleShot(500, self._start_backend)
 
+        # Periodic episode check — fires after 60 s then every check_interval minutes
+        self._check_timer = QTimer(self)
+        self._check_timer.timeout.connect(self._run_episode_check)
+        QTimer.singleShot(60_000, self._start_check_timer)
+
     def _build_screens(self) -> None:
         from app.ui.screens.dashboard  import DashboardScreen
         from app.ui.screens.library    import LibraryScreen
@@ -140,31 +145,66 @@ class AnimeMonitorApp(QMainWindow):
         try:
             from app.core.jobs.queue import job_queue
             from app.core.pipeline.episode_pipeline import EpisodePipeline
-            pipeline = EpisodePipeline()
-            pipeline.setup()         # sync — subscribes to events, registers handlers
-            job_queue.start()        # sync — launches background task
-        except Exception as e:
-            print(f"Pipeline/Queue start error: {e}")
-
-        try:
             from app.watchers.torrent_watcher import TorrentWatcher
             from app.providers.torrents.qbittorrent import QBittorrentProvider
             from app.core.config import get_qbittorrent_config
+
             cfg = get_qbittorrent_config()
             provider = QBittorrentProvider(
                 host=cfg["host"], port=cfg["port"],
                 username=cfg["username"], password=cfg["password"],
             )
             watcher = TorrentWatcher(provider)
-            watcher.start()          # sync — launches polling task
+
+            pipeline = EpisodePipeline()
+            pipeline.setup(qbittorrent_provider=provider, watcher=watcher)
+            job_queue.start()
+            watcher.start()
         except Exception as e:
-            print(f"Watcher start error: {e}")
+            print(f"Pipeline/Queue/Watcher start error: {e}")
+
+    def _start_check_timer(self) -> None:
+        from app.core.config import get_check_interval
+        self._check_timer.start(get_check_interval())  # already in ms
+        self._run_episode_check()
+
+    def _run_episode_check(self) -> None:
+        from app.utils.async_bridge import run_async
+
+        async def _check():
+            from app.core.downloader import check_for_updates
+            return await check_for_updates()
+
+        def _done(result):
+            if isinstance(result, Exception):
+                return
+            triggered = result or []
+            # Refresh library if visible
+            lib = self._screens.get("library")
+            if lib:
+                lib.refresh()
+            # Dashboard cards already refreshed via episode_ready signal
+
+        run_async(_check(), on_done=_done)
 
     def _on_anime_added(self, title: str) -> None:
-        dashboard = self._screens.get("dashboard")
-        if dashboard:
-            dashboard.refresh()
         self._navigate("dashboard")
+
+        async def _fetch_meta_and_refresh():
+            from app.core.database import get_monitored_animes
+            from app.core.downloader import refresh_single_metadata
+            rows = await get_monitored_animes()
+            anime = next((r for r in rows if r[1] == title), None)
+            if anime:
+                await refresh_single_metadata(anime[0], anime[1])
+
+        def _done(_):
+            dashboard = self._screens.get("dashboard")
+            if dashboard:
+                dashboard.refresh()
+
+        from app.utils.async_bridge import run_async
+        run_async(_fetch_meta_and_refresh(), on_done=_done)
 
     def show_add_anime(self) -> None:
         self._add_overlay.open_overlay()

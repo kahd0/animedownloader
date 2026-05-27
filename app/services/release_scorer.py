@@ -49,9 +49,6 @@ def score_subtitle(result: SubtitleResult) -> int:
     if result.provider == "opensubtitles":
         score += 30
 
-    if result.provider == "animetosho":
-        score += 20
-
     return score
 
 

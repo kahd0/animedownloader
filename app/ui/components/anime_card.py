@@ -15,6 +15,14 @@ from app.ui.design import tokens as t
 from app.ui.utils.image_cache import get_cover_pixmap
 
 
+def _si(v) -> int:
+    """Safe int — returns 0 for None, non-numeric strings, etc."""
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 class AnimeCard(QWidget):
     clicked = Signal(int)  # anime_id
 
@@ -22,18 +30,26 @@ class AnimeCard(QWidget):
     H = t.CARD_HEIGHT
     POSTER_H = int(H * 0.76)  # ~250px
 
-    def __init__(self, anime_data: tuple, parent=None):
+    def __init__(self, anime_data: tuple, parent=None, pending_counts: dict | None = None):
         super().__init__(parent)
-        _, title_p, last_ep, res, last_date, cover_url, official, airing, has_new, last_dl = anime_data
+        _, title_p, last_ep, res, last_date, cover_url, official, airing, has_new, last_dl, *rest = anime_data
+        last_ready = rest[6] if len(rest) > 6 else last_dl  # index 16 overall
         self._anime_id    = anime_data[0]
         self._title       = official or title_p
         self._title_pat   = title_p
-        self._episode     = last_ep
+        self._episode     = max(_si(last_ep), _si(last_dl)) or _si(last_ep)
         self._airing_status = airing or ""
         self._has_new     = bool(has_new)
         self._status      = "airing"  # will be updated by events
         self._cover: QPixmap | None = None
         self._hover_opacity: float = 0.0
+
+        # Episodes ready on disk but not yet marked as watched (disk-based via pending_counts)
+        self._watch_count     = (pending_counts or {}).get(
+            "watch_count", max(0, _si(last_ready) - _si(last_ep))
+        )
+        self._need_subtitle   = (pending_counts or {}).get("need_subtitle", 0)
+        self._need_translation = (pending_counts or {}).get("need_translation", 0)
 
         self.setFixedSize(self.W, self.H)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -98,6 +114,12 @@ class AnimeCard(QWidget):
         self._status = status
         self.update()
 
+    def set_pending_counts(self, counts: dict) -> None:
+        """Update subtitle/translation badge counts and repaint."""
+        self._need_subtitle    = counts.get("need_subtitle", 0)
+        self._need_translation = counts.get("need_translation", 0)
+        self.update()
+
     # ── Painting ─────────────────────────────────────────────────────────────
 
     def sizeHint(self) -> QSize:
@@ -142,19 +164,32 @@ class AnimeCard(QWidget):
         grad.setColorAt(1.0, QColor(t.BG_SURFACE))
         painter.fillRect(QRect(0, self.POSTER_H - 80, self.W, 80), grad)
 
-        # NOVO badge
-        if self._has_new:
-            badge_font = QFont()
-            badge_font.setPixelSize(9)
-            badge_font.setWeight(QFont.Weight.Bold)
-            painter.setFont(badge_font)
-            bw, bh = 44, 20
+        # Multi-episode badges (top-right corner of poster)
+        badge_font = QFont()
+        badge_font.setPixelSize(9)
+        badge_font.setWeight(QFont.Weight.Bold)
+        painter.setFont(badge_font)
+        bfm = QFontMetrics(badge_font)
+
+        badges = []
+        if self._watch_count > 0:
+            badges.append((f"{self._watch_count} ▶", QColor(t.NEW_EPISODE)))
+        if self._need_subtitle > 0:
+            badges.append((f"{self._need_subtitle} \U0001f4c4", QColor(t.INFO)))
+        if self._need_translation > 0:
+            badges.append((f"{self._need_translation} \U0001f310", QColor(t.TRANSLATING)))
+
+        bh = 20
+        by = 10
+        for badge_text, badge_color in badges:
+            bw = bfm.horizontalAdvance(badge_text) + 16
             bx = self.W - bw - 8
-            painter.setBrush(QColor(t.NEW_EPISODE))
+            painter.setBrush(badge_color)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(bx, 10, bw, bh, 10, 10)
+            painter.drawRoundedRect(bx, by, bw, bh, 10, 10)
             painter.setPen(QColor("white"))
-            painter.drawText(QRect(bx, 10, bw, bh), Qt.AlignmentFlag.AlignCenter, "NOVO")
+            painter.drawText(QRect(bx, by, bw, bh), Qt.AlignmentFlag.AlignCenter, badge_text)
+            by += bh + 4
 
         # Status chip (bottom left of poster)
         status = self._get_status_display()
@@ -192,7 +227,13 @@ class AnimeCard(QWidget):
         painter.setFont(ep_font)
         painter.setPen(QColor(t.TEXT_SECONDARY))
         ep_rect = QRect(t.SP3, self.POSTER_H + t.SP2 + 20, self.W - t.SP6, 20)
-        ep_text = f"EP {self._episode:02d}" if self._episode else "—"
+        if self._watch_count > 1 and self._episode:
+            ep_from = self._episode - self._watch_count + 1
+            ep_text = f"EP {ep_from:02d}–{self._episode:02d}"
+        elif self._episode:
+            ep_text = f"EP {self._episode:02d}"
+        else:
+            ep_text = "—"
         painter.drawText(ep_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, ep_text)
 
         # Hover overlay

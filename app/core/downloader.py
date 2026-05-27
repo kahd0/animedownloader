@@ -8,7 +8,7 @@ import shutil
 import asyncio
 from .config import get_source_dir, get_final_dir, get_subs_dir, COVERS_DIR, get_download_ahead
 from .naming import smart_rename, matches_pattern
-from .database import get_monitored_animes, update_last_episode, update_anime_metadata
+from .database import get_monitored_animes, update_last_episode, mark_episode_queued, mark_episode_ready, update_anime_metadata
 from .api import (
     fetch_latest_releases, search_anime_history, fetch_anime_metadata,
     find_subtitles, download_chosen_subtitle
@@ -23,7 +23,7 @@ _SUB_SORT_KEY = lambda s: (
      else 2 if s.get('info', {}).get('lang') == 'eng'
      else 3),
     0 if s.get('info', {}).get('codec', 'ass').lower() == 'ass' else 1,
-    0 if s.get('source', 'animetosho') == 'animetosho' else 1,
+    0 if s.get('source') == 'opensubtitles' else 1,
 )
 
 async def search_subsplease_shows(query):
@@ -231,35 +231,12 @@ async def _translate_one(client, sem, text):
 
 
 async def translate_video_subtitle(video_path):
-    """Traduz a legenda do vídeo para PT-BR.
-    Tenta usar o novo TranslationService (pysubs2 + contextual batching).
-    Faz fallback para a implementação legada se pysubs2 não estiver disponível."""
+    """Traduz a legenda do vídeo para PT-BR de forma controlada."""
     if not os.path.exists(video_path):
         return {"ok": False, "output_path": None, "error": f"Arquivo não encontrado: {video_path}"}
 
-    try:
-        import pysubs2  # noqa: F401
-        from ..services.translation_service import TranslationService
-        from ..services.ass_processor import has_ass_content
-
-        expected_output = os.path.splitext(video_path)[0] + ".pt.ass"
-        tmp_src = expected_output + ".src.tmp.ass"
-
-        src_path, is_tmp = await _extract_source_ass(video_path, tmp_src)
-        if not src_path:
-            return {"ok": False, "output_path": None, "error": "Não foi possível obter a legenda de origem"}
-
-        import shutil as _shutil
-        _shutil.copy2(src_path, expected_output)
-        if is_tmp and os.path.exists(tmp_src):
-            try: os.remove(tmp_src)
-            except Exception: pass
-
-        service = TranslationService()
-        translated_path = await service.translate(expected_output)
-        return {"ok": True, "output_path": translated_path, "error": None}
-    except ImportError:
-        pass  # fall through to legacy implementation
+    from .config import get_gemini_api_key
+    gemini_key = get_gemini_api_key()
 
     expected_output = os.path.splitext(video_path)[0] + ".pt.ass"
     tmp_src = expected_output + ".src.tmp.ass"
@@ -298,16 +275,51 @@ async def translate_video_subtitle(video_path):
             except Exception: pass
         return {"ok": False, "output_path": None, "error": "Nenhuma linha de diálogo encontrada na legenda"}
 
-    sem = asyncio.Semaphore(8)
-    async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0"}) as client:
-        translated = await asyncio.gather(*(_translate_one(client, sem, t) for t in texts_to_translate))
+    if gemini_key:
+        from ..providers.translators.gemini import GeminiProvider
+        provider = GeminiProvider(api_key=gemini_key)
+        
+        translated = []
+        chunk_size = 30
+        for i in range(0, len(texts_to_translate), chunk_size):
+            chunk = texts_to_translate[i:i + chunk_size]
+            success = False
+            for attempt in range(4):
+                try:
+                    chunk_trans = await provider.translate_batch(chunk)
+                    if (chunk_trans == chunk and any(re.search('[a-zA-Z]', c) for c in chunk)) or not chunk_trans:
+                        if attempt < 3:
+                            await asyncio.sleep(15 + attempt * 10)
+                            continue
+                        break
+                    translated.extend(chunk_trans)
+                    success = True
+                    break
+                except Exception:
+                    if attempt < 3: await asyncio.sleep(15 + attempt * 10)
+                    else: break
+            
+            if not success:
+                sem = asyncio.Semaphore(8)
+                async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0"}) as client:
+                    chunk_fallback = await asyncio.gather(*(_translate_one(client, sem, t) for t in chunk))
+                    translated.extend(chunk_fallback)
+            
+            await asyncio.sleep(4.5)
+    else:
+        sem = asyncio.Semaphore(8)
+        async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0"}) as client:
+            translated = await asyncio.gather(*(_translate_one(client, sem, t) for t in texts_to_translate))
 
     for (idx, parts), trans_text, tokens in zip(dialogue_indices, translated, token_sets):
         parts[9] = _restore_ass_text(trans_text, tokens)
         lines[idx] = ",".join(parts)
 
     try:
-        await asyncio.to_thread(lambda: open(expected_output, "w", encoding="utf-8").write("\n".join(lines)))
+        def _write_output():
+            with open(expected_output, "w", encoding="utf-8") as _f:
+                _f.write("\n".join(lines))
+        await asyncio.to_thread(_write_output)
     except Exception as e:
         if is_tmp and os.path.exists(tmp_src):
             try: os.remove(tmp_src)
@@ -357,16 +369,30 @@ async def organize_downloads():
     moved_files = []
 
     # 1. Mover vídeos da pasta de Downloads para a pasta FINAL
+    monitored = await get_monitored_animes()
     if os.path.exists(source_dir):
-        monitored = await get_monitored_animes()
-        source_files = await asyncio.to_thread(os.listdir, source_dir)
-        for filename in source_files:
+
+        def _get_files():
+            files = []
+            final_abs = os.path.abspath(final_dir)
+            for root, _, fs in os.walk(source_dir):
+                root_abs = os.path.abspath(root)
+                # Evita recursão na pasta final se ela estiver dentro de source_dir
+                if root_abs == final_abs or root_abs.startswith(final_abs + os.sep):
+                    continue
+                for f in fs:
+                    files.append((f, os.path.join(root, f)))
+            return files
+
+        source_files = await asyncio.to_thread(_get_files)
+
+        for filename, old_path in source_files:
             if filename.endswith((".!qB", ".part")): continue
             if not filename.lower().endswith((".mkv", ".mp4", ".avi")): continue
 
-            for _, pattern, _, _, *_ in monitored:
+            for row in monitored:
+                pattern = row[1]
                 if matches_pattern(filename, pattern):
-                    old_path = os.path.join(source_dir, filename)
                     new_name = smart_rename(filename)
                     new_path = os.path.join(final_dir, new_name)
                     try:
@@ -375,8 +401,15 @@ async def organize_downloads():
                             moved_files.append(f"Renomeado: {filename} → {new_name}")
                         else:
                             moved_files.append(f"Vídeo: {filename}")
+
+                        # Limpa pasta de origem se ficou vazia e não é a pasta raiz
+                        old_dir = os.path.dirname(old_path)
+                        if os.path.abspath(old_dir) != os.path.abspath(source_dir):
+                            if not os.listdir(old_dir):
+                                os.rmdir(old_dir)
                     except Exception as e:
                         print(f"Erro ao mover vídeo {filename}: {e}")
+                    break
 
     # 2. Parear legendas com vídeos na pasta FINAL
     subs_dir = get_subs_dir()
@@ -408,22 +441,22 @@ async def organize_downloads():
                     break
 
             for sub_file in subs_files:
-                sub_lower = sub_file.lower()
-                if f"_ep{ep_num_str}" not in sub_lower:
+                sub_lower = sub_file.lower().replace("_", " ")
+                if f" ep{ep_num_str}" not in sub_lower:
                     continue
                 if video_safe_prefix and not sub_lower.startswith(video_safe_prefix):
                     continue
-                    sub_ext = os.path.splitext(sub_file)[1]
-                    old_sub_path = os.path.join(subs_dir, sub_file)
-                    new_sub_name = f"{video_name_no_ext}{sub_ext}"
-                    new_sub_path = os.path.join(final_dir, new_sub_name)
-                    try:
-                        await asyncio.to_thread(shutil.move, old_sub_path, new_sub_path)
-                        final_set.add(new_sub_name)
-                        moved_files.append(f"Legenda pareada: {video_file}")
-                    except Exception as e:
-                        print(f"Erro ao mover legenda {sub_file}: {e}")
-                    break
+                sub_ext = os.path.splitext(sub_file)[1]
+                old_sub_path = os.path.join(subs_dir, sub_file)
+                new_sub_name = f"{video_name_no_ext}{sub_ext}"
+                new_sub_path = os.path.join(final_dir, new_sub_name)
+                try:
+                    await asyncio.to_thread(shutil.move, old_sub_path, new_sub_path)
+                    final_set.add(new_sub_name)
+                    moved_files.append(f"Legenda pareada: {video_file}")
+                except Exception as e:
+                    print(f"Erro ao mover legenda {sub_file}: {e}")
+                break
 
     return moved_files
 
@@ -452,8 +485,13 @@ async def process_releases(releases_list, monitored_list=None):
             last_watched    = row[2]
             res             = row[3]
             last_downloaded = row[9]
+            # last_ready reflects episodes actually confirmed on disk; use it as
+            # the re-download threshold so episodes queued but never moved to disk
+            # get re-triggered on the next "Verificar agora".
+            last_ready      = row[16] if len(row) > 16 else last_downloaded
 
-            if pattern.lower() in show_name.lower() and last_downloaded < episode_num <= last_watched + download_ahead:
+            window_base = max(last_watched, last_downloaded)
+            if matches_pattern(show_name, pattern) and last_ready < episode_num <= window_base + download_ahead:
                 magnet = None
                 for dl in info.get('downloads', []):
                     if dl.get('res') == res.replace('p', ''):
@@ -462,7 +500,7 @@ async def process_releases(releases_list, monitored_list=None):
                 if not magnet and info.get('downloads'): magnet = info['downloads'][0].get('magnet')
 
                 if magnet:
-                    await update_last_episode(pattern, episode_num)
+                    await mark_episode_queued(pattern, episode_num)
                     # Emit event so the pipeline takes over (qBittorrent + subtitle + organizer)
                     try:
                         from ..core.events.bus import bus, EpisodeDetected
@@ -477,34 +515,110 @@ async def process_releases(releases_list, monitored_list=None):
                     except Exception:
                         # Fallback: direct magnet open (pipeline not set up)
                         trigger_magnet(magnet)
+                        await mark_episode_ready(pattern, episode_num)
                         sub_file = await download_subtitle(show_name, episode_num)
                         sub_msg = " (Legenda baixada)" if sub_file else ""
                         downloads_triggered.append(f"{show_name} - {episode_num} ({res}){sub_msg}")
                     else:
                         downloads_triggered.append(f"{show_name} - {episode_num} ({res}) [pipeline]")
                     monitored_list = [
-                        row[:9] + (episode_num,) if row[1] == pattern else row
+                        (*row[:9], episode_num, *row[10:]) if row[1] == pattern else row
                         for row in monitored_list
                     ]
 
     return downloads_triggered
 
+async def _disk_last_ready(monitored: list) -> dict[str, int]:
+    """Return {title_pattern: highest_ep_on_disk} by scanning the final episodes folder.
+
+    This is used to override the DB last_ready value, which can become stale when
+    the pipeline marks episodes ready before the file is actually organized to disk.
+    """
+    final_dir = get_final_dir()
+    if not os.path.isdir(final_dir):
+        return {}
+    try:
+        files = await asyncio.to_thread(os.listdir, final_dir)
+    except Exception:
+        return {}
+    exts = {".mkv", ".mp4", ".avi", ".mov", ".wmv"}
+    video_eps = [
+        (f, extract_episode_number(f))
+        for f in files if os.path.splitext(f)[1].lower() in exts
+    ]
+    result = {}
+    for row in monitored:
+        pattern = row[1]
+        matching = [ep for f, ep in video_eps if ep is not None and matches_pattern(f, pattern)]
+        result[pattern] = max(matching) if matching else 0
+    return result
+
+
+def _with_disk_last_ready(monitored: list, disk_map: dict[str, int]) -> list:
+    """Return monitored rows with last_ready (index 16) clamped to the disk-based value.
+
+    Uses max(last_watched, disk_val) so already-watched episodes (no longer on disk)
+    are never re-downloaded — only episodes after the last watched are triggered.
+    """
+    patched = []
+    for row in monitored:
+        pattern   = row[1]
+        last_watched = int(row[2] or 0)
+        disk_val  = disk_map.get(pattern, 0)
+        # Effective threshold: don't re-trigger anything the user has already watched,
+        # even if the file was deleted from disk.
+        effective = max(last_watched, disk_val)
+        if len(row) > 16 and row[16] > effective:
+            row = (*row[:16], effective, *row[17:])
+        patched.append(row)
+    return patched
+
+
 async def check_for_updates():
     monitored = await get_monitored_animes()
     if not monitored:
         return []
+    disk_map = await _disk_last_ready(monitored)
+    monitored = _with_disk_last_ready(monitored, disk_map)
     latest = await fetch_latest_releases()
     triggered = await process_releases(latest.items(), monitored)
     all_triggered = list(triggered)
-    monitored = await get_monitored_animes()
+    monitored = _with_disk_last_ready(await get_monitored_animes(), disk_map)
     for _, pattern, *_ in monitored:
-        if not any(pattern.lower() in t.lower() for t in all_triggered):
+        # Check if any triggered string matches this pattern, including shows
+        # whose SubsPlease title differs from the monitored pattern (e.g. Japanese titles).
+        already_triggered = any(
+            matches_pattern(t.split(' - ')[0], pattern) for t in all_triggered if ' - ' in t
+        )
+        if not already_triggered:
             history = await search_anime_history(pattern)
+            # If full-title search returns nothing, try each distinctive word.
+            # Only accept a word's results if at least one entry actually matches
+            # the pattern — avoids accepting "Release that Witch" when looking for
+            # "Witch Hat Atelier" which lives under the Japanese title on SubsPlease.
+            if not history:
+                words = re.findall(r'[a-z]{5,}', pattern.lower())
+                for word in words:
+                    candidate = list(await search_anime_history(word))
+                    matched_show = next(
+                        ((c[1] if isinstance(c, tuple) else c).get('show', '')
+                         for c in candidate
+                         if matches_pattern((c[1] if isinstance(c, tuple) else c).get('show', ''), pattern)),
+                        None,
+                    )
+                    if matched_show:
+                        # Only keep episodes from the single matched show to avoid
+                        # false positives from other shows sharing the search keyword.
+                        history = [
+                            c for c in candidate
+                            if (c[1] if isinstance(c, tuple) else c).get('show', '') == matched_show
+                        ]
+                        break
             if history:
                 deep_triggered = await process_releases(history, monitored)
                 all_triggered.extend(deep_triggered)
                 if deep_triggered:
-                    monitored = await get_monitored_animes()
+                    monitored = _with_disk_last_ready(await get_monitored_animes(), disk_map)
 
     from .config import get_rss_feeds
     from .api import fetch_rss_feed
@@ -516,14 +630,14 @@ async def check_for_updates():
                     rss_triggered = await process_releases(rss_releases, monitored)
                     all_triggered.extend(rss_triggered)
                     if rss_triggered:
-                        monitored = await get_monitored_animes()
+                        monitored = _with_disk_last_ready(await get_monitored_animes(), disk_map)
         else:
             rss_releases = await fetch_rss_feed(feed["url"])
             if rss_releases:
                 rss_triggered = await process_releases(rss_releases, monitored)
                 all_triggered.extend(rss_triggered)
                 if rss_triggered:
-                    monitored = await get_monitored_animes()
+                    monitored = _with_disk_last_ready(await get_monitored_animes(), disk_map)
 
     return all_triggered
 
@@ -532,6 +646,8 @@ async def check_for_updates_single(anime_id: int, pattern: str):
     single = [row for row in monitored if row[0] == anime_id]
     if not single:
         return []
+    disk_map = await _disk_last_ready(single)
+    single = _with_disk_last_ready(single, disk_map)
     latest = await fetch_latest_releases()
     triggered = await process_releases(latest.items(), single)
     if not triggered:
@@ -553,8 +669,16 @@ async def refresh_single_metadata(anime_id: int, title_pattern: str):
     meta = await fetch_anime_metadata(title_pattern)
     if meta:
         await update_anime_metadata(
-            anime_id, meta["official_title"], meta["cover_url"], meta["airing_status"]
+            anime_id, meta["official_title"], meta["cover_url"], meta["airing_status"],
+            total_episodes=meta.get("total_episodes"),
+            score=meta.get("score"),
+            studio=meta.get("studio"),
+            season=meta.get("season"),
+            mal_year=meta.get("mal_year"),
+            synopsis=meta.get("synopsis"),
         )
+        if meta.get("cover_url"):
+            await download_cover(meta["cover_url"], title_pattern)
     return meta
 
 async def refresh_all_metadata():
@@ -565,7 +689,13 @@ async def refresh_all_metadata():
         meta = await fetch_anime_metadata(pattern)
         if meta:
             await update_anime_metadata(
-                anime_id, meta["official_title"], meta["cover_url"], meta["airing_status"]
+                anime_id, meta["official_title"], meta["cover_url"], meta["airing_status"],
+                total_episodes=meta.get("total_episodes"),
+                score=meta.get("score"),
+                studio=meta.get("studio"),
+                season=meta.get("season"),
+                mal_year=meta.get("mal_year"),
+                synopsis=meta.get("synopsis"),
             )
             updated.append(pattern)
         await asyncio.sleep(0.4)  # Jikan rate limit

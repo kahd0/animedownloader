@@ -150,6 +150,9 @@ class ToastManager:
         bottom_margin = 20
 
         for i, toast in enumerate(reversed(self._active)):
-            x = pr.right() - ToastNotification.W - right_margin
-            y = pr.bottom() - ToastNotification.H - bottom_margin - i * (ToastNotification.H + 8)
-            toast.setGeometry(x, y, ToastNotification.W, ToastNotification.H)
+            local_x = pr.right() - ToastNotification.W - right_margin
+            local_y = pr.bottom() - ToastNotification.H - bottom_margin - i * (ToastNotification.H + 8)
+            # Toasts are top-level windows (Qt.Tool) — must use global screen coords
+            from PySide6.QtCore import QPoint
+            gpos = self._parent.mapToGlobal(QPoint(local_x, local_y))
+            toast.setGeometry(gpos.x(), gpos.y(), ToastNotification.W, ToastNotification.H)

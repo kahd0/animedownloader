@@ -59,7 +59,10 @@ def _find_video(directory: str, title: str, episode: int) -> str | None:
 
     from app.utils.episode_parser import extract_episode_number
 
-    title_words = set(re.findall(r"\w{3,}", title.lower()))
+    all_title_words = set(re.findall(r"\w{3,}", title.lower()))
+    # Only use ASCII words for overlap; non-Latin titles (Japanese, etc.) have no
+    # overlap with English filenames, so fall back to episode-number-only matching.
+    ascii_title_words = {w for w in all_title_words if w.isascii()}
     best: str | None = None
 
     for fname in os.listdir(directory):
@@ -69,12 +72,13 @@ def _find_video(directory: str, title: str, episode: int) -> str | None:
         ep = extract_episode_number(fname)
         if ep != episode:
             continue
-        # Check title overlap
-        fname_words = set(re.findall(r"\w{3,}", fname.lower()))
-        overlap = title_words & fname_words
-        if len(overlap) >= max(1, len(title_words) // 2):
-            best = full
-            break
+        if ascii_title_words:
+            fname_words = set(re.findall(r"\w{3,}", fname.lower()))
+            overlap = ascii_title_words & fname_words
+            if len(overlap) < max(1, len(ascii_title_words) // 2):
+                continue
+        best = full
+        break
 
     return best
 

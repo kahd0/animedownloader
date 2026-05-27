@@ -9,7 +9,6 @@ GITHUB_REPO = "kahd0/animedownloader"
 # APIs
 API_URL = "https://subsplease.org/api/?f=latest&tz=UTC"
 SEARCH_URL = "https://subsplease.org/api/?f=search&tz=UTC&s="
-ANIMETOSHO_API = "https://feed.animetosho.org/json"
 JIKAN_API = "https://api.jikan.moe/v4"
 OPENSUBTITLES_API = "https://api.opensubtitles.com/api/v1"
 
@@ -78,8 +77,8 @@ def get_download_ahead():
         return 3
 
 _DEFAULT_SUBTITLE_SOURCES = [
-    {"id": "animetosho",    "name": "AnimeTosho",    "enabled": True,  "priority": 1},
-    {"id": "opensubtitles", "name": "OpenSubtitles", "enabled": True,  "priority": 2},
+    {"id": "opensubtitles", "name": "OpenSubtitles", "enabled": True,  "priority": 1},
+    {"id": "jimaku",        "name": "Jimaku",        "enabled": False, "priority": 2},
 ]
 
 def get_rss_feeds() -> list[dict]:

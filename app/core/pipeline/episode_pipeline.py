@@ -8,6 +8,7 @@ from app.core.events.bus import (
     EpisodeDetected,
     TorrentAdded,
     TorrentCompleted,
+    FileDetected,
     SubtitleFound,
     SubtitleTranslated,
     MediaOrganized,
@@ -28,12 +29,16 @@ class EpisodePipeline:
 
     def __init__(self):
         self._qbittorrent = None
+        self._watcher = None
+        self._fallback_pending: dict[str, dict] = {}  # "anime_id:episode" → {anime_id, episode, title_pattern}
 
-    def setup(self, qbittorrent_provider=None) -> None:
+    def setup(self, qbittorrent_provider=None, watcher=None) -> None:
         self._qbittorrent = qbittorrent_provider
+        self._watcher = watcher
 
         bus.subscribe(EpisodeDetected, self._on_episode_detected)
         bus.subscribe(TorrentCompleted, self._on_torrent_completed)
+        bus.subscribe(FileDetected, self._on_file_detected)
 
         job_queue.register("subtitle", self._job_subtitle)
         job_queue.register("translation", self._job_translation)
@@ -53,14 +58,14 @@ class EpisodePipeline:
                     resolution=event.resolution,
                     source=event.source,
                 )
+                if self._watcher and torrent_hash:
+                    self._watcher.track(torrent_hash, event.anime_id, event.episode)
                 await bus.publish(TorrentAdded(
                     anime_id=event.anime_id,
                     episode=event.episode,
                     torrent_hash=torrent_hash,
                 ))
-                from app.watchers.torrent_watcher import TorrentWatcher
             else:
-                # Fallback: open magnet with system handler
                 _open_magnet(event.magnet)
                 await db.save_release(
                     anime_id=event.anime_id,
@@ -71,6 +76,14 @@ class EpisodePipeline:
                     resolution=event.resolution,
                     source=event.source,
                 )
+                # Register for filesystem detection: FilesystemWatcher will emit
+                # FileDetected when the video file lands on disk, triggering the pipeline.
+                key = f"{event.anime_id}:{event.episode}"
+                self._fallback_pending[key] = {
+                    "anime_id": event.anime_id,
+                    "episode": event.episode,
+                    "title_pattern": event.title_pattern,
+                }
         except Exception as e:
             await bus.publish(PipelineFailed(
                 anime_id=event.anime_id,
@@ -93,6 +106,23 @@ class EpisodePipeline:
             save_path=event.save_path,
             name=event.name,
         )
+
+    async def _on_file_detected(self, event: FileDetected) -> None:
+        """Handle a video file detected by FilesystemWatcher (xdg-open fallback path)."""
+        if not self._fallback_pending:
+            return
+        filename = os.path.basename(event.path).lower()
+        for key, entry in list(self._fallback_pending.items()):
+            if entry["title_pattern"].lower() in filename:
+                del self._fallback_pending[key]
+                await job_queue.enqueue(
+                    "subtitle",
+                    anime_id=entry["anime_id"],
+                    episode=entry["episode"],
+                    save_path=os.path.dirname(event.path),
+                    name=os.path.basename(event.path),
+                )
+                break
 
     async def _job_subtitle(self, payload: dict[str, Any]) -> None:
         """Job: find and download best subtitle."""
@@ -125,13 +155,14 @@ class EpisodePipeline:
                 language=_detect_language(subtitle_path),
                 provider="auto",
             ))
-            # If subtitle is not PT-BR, enqueue translation
             if not _detect_language(subtitle_path).startswith("pt"):
+                # Bug 2 fix: pass video_dir so _job_translation can forward it to organization
                 await job_queue.enqueue(
                     "translation",
                     anime_id=anime_id,
                     episode=episode,
                     subtitle_path=subtitle_path,
+                    video_dir=save_path,
                 )
             else:
                 await job_queue.enqueue(
@@ -140,28 +171,50 @@ class EpisodePipeline:
                     episode=episode,
                     video_dir=save_path,
                 )
+        else:
+            # Bug 1 fix: no subtitle found — still organize so episode isn't stuck
+            await job_queue.enqueue(
+                "organization",
+                anime_id=anime_id,
+                episode=episode,
+                video_dir=save_path,
+            )
 
     async def _job_translation(self, payload: dict[str, Any]) -> None:
         """Job: translate subtitle to PT-BR."""
         anime_id = payload["anime_id"]
         episode = payload["episode"]
         subtitle_path = payload.get("subtitle_path", "")
+        # Bug 3 fix: forward video_dir that was passed from _job_subtitle
+        video_dir = payload.get("video_dir", "")
 
         from app.services.translation_service import TranslationService
         service = TranslationService()
-        translated_path = await service.translate(subtitle_path, anime_id=anime_id)
 
-        await bus.publish(SubtitleTranslated(
-            anime_id=anime_id,
-            episode=episode,
-            path=translated_path,
-        ))
-        await job_queue.enqueue(
-            "organization",
-            anime_id=anime_id,
-            episode=episode,
-            subtitle_path=translated_path,
-        )
+        translated_path = subtitle_path  # fallback to original if translation fails
+        try:
+            translated_path = await service.translate(subtitle_path, anime_id=anime_id)
+            await bus.publish(SubtitleTranslated(
+                anime_id=anime_id,
+                episode=episode,
+                path=translated_path,
+            ))
+        except Exception as e:
+            # Bug 4 fix: report failure but always fall through to organization
+            await bus.publish(PipelineFailed(
+                anime_id=anime_id,
+                episode=episode,
+                step="translation",
+                error=str(e),
+            ))
+        finally:
+            await job_queue.enqueue(
+                "organization",
+                anime_id=anime_id,
+                episode=episode,
+                subtitle_path=translated_path,
+                video_dir=video_dir,
+            )
 
     async def _job_organization(self, payload: dict[str, Any]) -> None:
         """Job: organize video file into final directory."""
@@ -186,6 +239,17 @@ class EpisodePipeline:
             dest_dir=get_final_dir(),
         )
         if final_path:
+            await db.mark_episode_ready(title_pattern, episode)
+
+            # Remove torrent from qBittorrent now that the file is organized
+            if self._qbittorrent:
+                torrent_hash = await _find_hash_for_episode(anime_id, episode)
+                if torrent_hash:
+                    try:
+                        await self._qbittorrent.remove_torrent(torrent_hash)
+                    except Exception as e:
+                        print(f"[Pipeline] remove_torrent erro: {e}")
+
             await bus.publish(MediaOrganized(
                 anime_id=anime_id,
                 episode=episode,
@@ -196,6 +260,19 @@ class EpisodePipeline:
                 episode=episode,
                 title_pattern=title_pattern,
             ))
+
+
+async def _find_hash_for_episode(anime_id: int, episode: int) -> str | None:
+    """Return the torrent_hash stored for a given anime_id+episode, or None."""
+    from app.core.config import DB_PATH
+    import aiosqlite
+    async with aiosqlite.connect(DB_PATH) as db_conn:
+        async with db_conn.execute(
+            "SELECT torrent_hash FROM releases WHERE anime_id = ? AND episode = ? LIMIT 1",
+            (anime_id, episode),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row and row[0] else None
 
 
 async def _find_release_by_hash(torrent_hash: str) -> tuple[int, int] | None:
@@ -215,6 +292,17 @@ def _detect_language(path: str) -> str:
     p = path.lower()
     if any(t in p for t in ("pt-br", "ptbr", "portuguese", "brasil")):
         return "pt-br"
+    try:
+        import re as _re
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+            sample = f.read(8192)
+        # Hiragana, Katakana, CJK Unified Ideographs
+        if _re.search(r"[぀-ゟ゠-ヿ一-鿿]", sample):
+            return "ja"
+        if any(t in sample.lower() for t in ("pt-br", "portuguese", "brasil")):
+            return "pt-br"
+    except Exception:
+        pass
     return "en"
 
 

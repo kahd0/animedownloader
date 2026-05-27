@@ -1,6 +1,8 @@
 """Settings screen — inline categorized settings."""
 from __future__ import annotations
 
+import json
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
@@ -11,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from app.ui.design import tokens as t
 from app.utils.async_bridge import run_async
+from app.providers.torrents.qbittorrent import QBittorrentProvider
 
 
 CATEGORIES = [
@@ -130,6 +133,121 @@ class _SectionCard(QFrame):
         self._rows_layout.addWidget(row)
 
 
+class _RSSFeedRow(QWidget):
+    """Single RSS feed row: enabled checkbox + name + url + delete button."""
+
+    def __init__(self, name: str = "", url: str = "", enabled: bool = True, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.setSpacing(t.SP2)
+
+        self._enabled = QCheckBox()
+        self._enabled.setChecked(enabled)
+        self._enabled.setFixedWidth(24)
+
+        self._name = QLineEdit(name)
+        self._name.setPlaceholderText("Nome")
+        self._name.setFixedWidth(130)
+        self._name.setFixedHeight(32)
+
+        self._url = QLineEdit(url)
+        self._url.setPlaceholderText("URL do feed RSS")
+        self._url.setMinimumWidth(260)
+        self._url.setFixedHeight(32)
+
+        del_btn = QPushButton("✕")
+        del_btn.setFixedSize(32, 32)
+        del_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {t.TEXT_MUTED};
+                border: 1px solid {t.BG_BORDER};
+                border-radius: {t.RADIUS_MD}px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{ color: #e55; border-color: #e55; }}
+        """)
+        del_btn.clicked.connect(self._delete)
+
+        layout.addWidget(self._enabled)
+        layout.addWidget(self._name)
+        layout.addWidget(self._url, 1)
+        layout.addWidget(del_btn)
+
+    def _delete(self) -> None:
+        parent_widget = self.parent()
+        if parent_widget is not None:
+            layout = parent_widget.layout()
+            if layout is not None:
+                layout.removeWidget(self)
+        self.setParent(None)
+        self.deleteLater()
+
+    def data(self) -> dict:
+        return {
+            "name": self._name.text().strip(),
+            "url": self._url.text().strip(),
+            "enabled": self._enabled.isChecked(),
+        }
+
+
+class _RSSSection(_SectionCard):
+    """Manages a dynamic list of RSS feeds."""
+
+    def __init__(self, feeds: list[dict], parent=None):
+        super().__init__("FEEDS RSS", parent)
+
+        self._list_container = QWidget()
+        self._list_layout = QVBoxLayout(self._list_container)
+        self._list_layout.setContentsMargins(0, 0, 0, 0)
+        self._list_layout.setSpacing(2)
+        self._rows_layout.addWidget(self._list_container)
+
+        hint = QLabel("Suporta {show} na URL para feeds por anime (ex: nyaa.si/?c=0_0&f=0&q={show})")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {t.TEXT_MUTED}; font-size: 11px; background: transparent;")
+        self._rows_layout.addWidget(hint)
+
+        add_btn = QPushButton("+ Adicionar Feed")
+        add_btn.setFixedHeight(32)
+        add_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {t.ACCENT};
+                border: 1px solid {t.ACCENT};
+                border-radius: {t.RADIUS_MD}px;
+                font-size: 12px;
+                padding: 0 {t.SP3}px;
+            }}
+            QPushButton:hover {{ background: {t.ACCENT_MUTED}; }}
+        """)
+        add_btn.clicked.connect(self._add_row)
+        btn_row = QWidget()
+        brl = QHBoxLayout(btn_row)
+        brl.setContentsMargins(0, 0, 0, 0)
+        brl.addStretch(1)
+        brl.addWidget(add_btn)
+        self._rows_layout.addWidget(btn_row)
+
+        for feed in feeds:
+            self._add_row(feed.get("name", ""), feed.get("url", ""), feed.get("enabled", True))
+
+    def _add_row(self, name: str = "", url: str = "", enabled: bool = True) -> None:
+        row = _RSSFeedRow(name, url, enabled, self._list_container)
+        self._list_layout.addWidget(row)
+
+    def get_feeds(self) -> list[dict]:
+        feeds = []
+        for i in range(self._list_layout.count()):
+            item = self._list_layout.itemAt(i)
+            if item and item.widget() and isinstance(item.widget(), _RSSFeedRow):
+                d = item.widget().data()
+                if d["url"]:
+                    feeds.append(d)
+        return feeds
+
+
 class SettingsScreen(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -226,7 +344,6 @@ class SettingsScreen(QWidget):
     def _load_config(self) -> None:
         try:
             from app.core import config as cfg_mod
-            # Build a simple namespace from config getters
             class _Cfg:
                 download_path = cfg_mod.get_source_dir()
                 organize_path = cfg_mod.get_final_dir()
@@ -234,12 +351,14 @@ class SettingsScreen(QWidget):
                 default_res   = cfg_mod.get_default_resolution()
                 check_interval= int(cfg_mod.get_setting("check_interval", "10"))
                 auto_organize = cfg_mod.is_auto_organize_enabled()
+                download_ahead= cfg_mod.get_download_ahead()
                 qbt_host      = cfg_mod.get_setting("qbt_host", "localhost")
                 qbt_port      = cfg_mod.get_setting("qbt_port", "8080")
                 qbt_user      = cfg_mod.get_setting("qbt_user", "")
                 qbt_pass      = cfg_mod.get_setting("qbt_pass", "")
                 opensubtitles_api_key = cfg_mod.get_setting("opensubtitles_api_key", "")
                 gemini_api_key        = cfg_mod.get_gemini_api_key()
+                rss_feeds_raw = cfg_mod.get_setting("rss_feeds", "[]") or "[]"
             self._config = _Cfg()
             self._build_all_sections()
             self._show_category("general")
@@ -291,6 +410,17 @@ class SettingsScreen(QWidget):
                 inp.setEchoMode(QLineEdit.EchoMode.Password)
             self._controls[key] = inp
             s_qbt.add_row(_SettingsRow(label, inp, desc))
+
+        self._qbt_test_btn = QPushButton("Testar Conexão")
+        self._qbt_test_btn.setProperty("class", "primary")
+        self._qbt_test_btn.setFixedHeight(36)
+        self._qbt_test_btn.clicked.connect(self._test_qbt_connection)
+        btn_row = QWidget()
+        btn_rl = QHBoxLayout(btn_row)
+        btn_rl.setContentsMargins(0, 0, 0, 0)
+        btn_rl.addStretch(1)
+        btn_rl.addWidget(self._qbt_test_btn)
+        s_qbt.add_row(btn_row)
         self._sections["qbittorrent"] = [s_qbt]
 
         # Subtitles: OpenSubtitles key only
@@ -313,8 +443,27 @@ class SettingsScreen(QWidget):
         s_trans.add_row(_SettingsRow("Google Gemini", inp_gem, "Para tradução contextual"))
         self._sections["translation"] = [s_trans]
 
+        # Downloads section
+        s_dl = _SectionCard("COMPORTAMENTO DO DOWNLOAD")
+        sp_ahead = _SettingsRow.spinner(getattr(cfg, "download_ahead", 3), 1, 50)
+        self._controls["download_ahead"] = sp_ahead
+        s_dl.add_row(_SettingsRow(
+            "Episódios adiantados",
+            sp_ahead,
+            "Quantos eps baixar além do último assistido",
+        ))
+        self._sections["downloads"] = [s_dl]
+
+        # RSS section
+        try:
+            feeds = json.loads(getattr(cfg, "rss_feeds_raw", "[]"))
+        except Exception:
+            feeds = []
+        self._rss_section = _RSSSection(feeds)
+        self._sections["rss"] = [self._rss_section]
+
         # Placeholder sections
-        for key in ["downloads", "rss", "organization", "appearance"]:
+        for key in ["organization", "appearance"]:
             placeholder = _SectionCard(key.upper())
             placeholder.add_row(QLabel("Em breve..."))
             self._sections.setdefault(key, [placeholder])
@@ -335,6 +484,30 @@ class SettingsScreen(QWidget):
             key = current.data(Qt.ItemDataRole.UserRole)
             self._show_category(key)
 
+    def _test_qbt_connection(self) -> None:
+        host = self._controls["qbt_host"].text()
+        port = self._controls["qbt_port"].text()
+        user = self._controls["qbt_user"].text()
+        password = self._controls["qbt_pass"].text()
+
+        async def _do_test():
+            provider = QBittorrentProvider(
+                host=host,
+                port=int(port) if port.isdigit() else 8080,
+                username=user,
+                password=password,
+            )
+            return await provider.is_available()
+
+        def _on_result(result) -> None:
+            from app.ui.components.toast import ToastManager
+            if isinstance(result, Exception) or not result:
+                ToastManager.instance().show("Falha na conexão com qBittorrent", "error")
+            else:
+                ToastManager.instance().show("qBittorrent conectado!", "success")
+
+        run_async(_do_test(), on_done=_on_result)
+
     def _save(self) -> None:
         if not self._config:
             return
@@ -345,6 +518,7 @@ class SettingsScreen(QWidget):
 
     async def _do_save(self):
         from app.core.database import set_setting
+        from app.core import config as cfg_mod
         for key, control in self._controls.items():
             if isinstance(control, QLineEdit):
                 await set_setting(key, control.text())
@@ -354,6 +528,10 @@ class SettingsScreen(QWidget):
                 await set_setting(key, control.currentText())
             elif isinstance(control, QCheckBox):
                 await set_setting(key, str(control.isChecked()))
+        if hasattr(self, "_rss_section"):
+            feeds = self._rss_section.get_feeds()
+            await set_setting("rss_feeds", json.dumps(feeds, ensure_ascii=False))
+        cfg_mod.load_settings_sync()
 
     def _on_saved(self, result) -> None:
         try:

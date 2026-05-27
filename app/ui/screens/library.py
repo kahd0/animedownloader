@@ -1,6 +1,9 @@
 """Library screen — sortable table view of all monitored anime."""
 from __future__ import annotations
 
+import os
+import re
+
 from PySide6.QtCore import (
     Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
     QTimer, Signal,
@@ -10,24 +13,56 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableView, QHeaderView,
     QLabel, QPushButton, QLineEdit, QMenu, QStyledItemDelegate,
     QStyleOptionViewItem, QFrame, QSizePolicy, QAbstractItemView,
+    QSplitter, QScrollArea,
 )
 
 from app.ui.design import tokens as t
 from app.utils.async_bridge import run_async
 from app.ui.utils.image_cache import get_cover_pixmap_sync
 
-import os
+# Row index constants — must match SELECT order in get_monitored_animes()
+_ID          = 0
+_PATTERN     = 1
+_LAST_EP     = 2
+_RES         = 3
+_DL_DATE     = 4
+_COVER_URL   = 5
+_TITLE       = 6
+_STATUS      = 7
+_HAS_NEW     = 8
+_LAST_DL     = 9
+_TOTAL_EPS   = 10
+_SCORE       = 11
+_STUDIO      = 12
+_SEASON      = 13
+_YEAR        = 14
+_SYNOPSIS    = 15
+_LAST_READY  = 16
+
+
+def _find_cover(title_pattern: str) -> str | None:
+    try:
+        from app.core.config import COVERS_DIR as COVER_DIR
+        safe = re.sub(r'[^\w\s-]', '', title_pattern).strip().lower().replace(' ', '_')
+        for ext in (".jpg", ".png", ".jpeg", ".webp"):
+            path = os.path.join(COVER_DIR, safe + ext)
+            if os.path.exists(path):
+                return path
+    except Exception:
+        pass
+    return None
 
 
 class _AnimeTableModel(QAbstractTableModel):
-    HEADERS = ["", "Título", "Episódio", "Status", "Resolução", "Atualizado", ""]
-    COL_THUMB = 0
-    COL_TITLE = 1
-    COL_EP    = 2
-    COL_STATUS= 3
-    COL_RES   = 4
-    COL_DATE  = 5
-    COL_ACTS  = 6
+    HEADERS = ["", "Título", "Progresso", "Status", "Score", "Estúdio", "Atualizado"]
+
+    COL_THUMB  = 0
+    COL_TITLE  = 1
+    COL_PROG   = 2
+    COL_STATUS = 3
+    COL_SCORE  = 4
+    COL_STUDIO = 5
+    COL_DATE   = 6
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -57,27 +92,29 @@ class _AnimeTableModel(QAbstractTableModel):
 
         if role == Qt.ItemDataRole.DisplayRole:
             if col == self.COL_TITLE:
-                return row[6] or row[1]  # official_title or title_pattern
-            if col == self.COL_EP:
-                return f"EP {row[2]:02d}" if row[2] else "—"
+                return row[_TITLE] or row[_PATTERN]
+            if col == self.COL_PROG:
+                ep = row[_LAST_EP] or 0
+                total = row[_TOTAL_EPS]
+                if total:
+                    return f"EP {ep:02d} / {total:02d}"
+                return f"EP {ep:02d}" if ep else "—"
             if col == self.COL_STATUS:
-                airing = row[7] or ""
-                if "Airing" in airing:
-                    return "Em Exibição"
-                elif "Finished" in airing:
-                    return "Finalizado"
-                return airing or "—"
-            if col == self.COL_RES:
-                return row[3] or "—"
+                return _status_label(row[_STATUS])
+            if col == self.COL_SCORE:
+                s = row[_SCORE]
+                return f"★ {s:.1f}" if s else "—"
+            if col == self.COL_STUDIO:
+                return row[_STUDIO] or "—"
             if col == self.COL_DATE:
-                return row[4] or "—"
+                return row[_DL_DATE] or "—"
             return None
 
         if role == Qt.ItemDataRole.UserRole:
-            return row  # full tuple
+            return row
 
         if role == Qt.ItemDataRole.UserRole + 1:  # has_new
-            return bool(row[8])
+            return bool(row[_HAS_NEW])
 
         return None
 
@@ -87,26 +124,49 @@ class _AnimeTableModel(QAbstractTableModel):
         return None
 
 
-class _LibraryDelegate(QStyledItemDelegate):
-    """Paints thumbnail, status chip, and action buttons."""
+def _status_label(raw: str | None) -> str:
+    if not raw:
+        return "—"
+    if "Airing" in raw:
+        return "Em Exibição"
+    if "Finished" in raw:
+        return "Finalizado"
+    if "Not yet" in raw:
+        return "Em Breve"
+    return raw
 
-    ROW_HEIGHT = 64
+
+def _status_color(raw: str | None) -> str:
+    if not raw:
+        return t.TEXT_MUTED
+    if "Airing" in raw:
+        return t.SUCCESS
+    if "Finished" in raw:
+        return t.TEXT_MUTED
+    if "Not yet" in raw:
+        return t.ACCENT
+    return t.TEXT_SECONDARY
+
+
+class _LibraryDelegate(QStyledItemDelegate):
+    ROW_HEIGHT = 68
 
     def sizeHint(self, option, index):
-        return __import__("PySide6.QtCore", fromlist=["QSize"]).QSize(option.rect.width(), self.ROW_HEIGHT)
+        from PySide6.QtCore import QSize
+        return QSize(option.rect.width(), self.ROW_HEIGHT)
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex):
+        from PySide6.QtWidgets import QStyle
         painter.save()
         row_data = index.data(Qt.ItemDataRole.UserRole)
+        has_new  = index.data(Qt.ItemDataRole.UserRole + 1)
         col = index.column()
 
-        # Row background
-        if option.state & __import__("PySide6.QtWidgets", fromlist=["QStyle"]).QStyle.StateFlag.State_Selected:
-            painter.fillRect(option.rect, QColor(t.BG_ELEVATED))
-        elif option.state & __import__("PySide6.QtWidgets", fromlist=["QStyle"]).QStyle.StateFlag.State_MouseOver:
-            painter.fillRect(option.rect, QColor(t.BG_ELEVATED))
-        else:
-            painter.fillRect(option.rect, QColor(t.BG_DEEP))
+        selected  = bool(option.state & QStyle.StateFlag.State_Selected)
+        hovered   = bool(option.state & QStyle.StateFlag.State_MouseOver)
+
+        bg = t.BG_ELEVATED if (selected or hovered) else t.BG_DEEP
+        painter.fillRect(option.rect, QColor(bg))
 
         if row_data is None:
             painter.restore()
@@ -115,43 +175,42 @@ class _LibraryDelegate(QStyledItemDelegate):
         r = option.rect
 
         if col == _AnimeTableModel.COL_THUMB:
-            # Thumbnail
-            thumb_w, thumb_h = 40, 56
+            thumb_w, thumb_h = 42, 58
             tx = r.x() + (r.width() - thumb_w) // 2
             ty = r.y() + (r.height() - thumb_h) // 2
 
-            cover_path = _find_cover(row_data[1])
+            cover_path = _find_cover(row_data[_PATTERN])
             if cover_path:
                 px = get_cover_pixmap_sync(cover_path, thumb_w, thumb_h)
                 if px and not px.isNull():
                     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-                    painter.drawPixmap(tx, ty, thumb_w, thumb_h, px)
+                    from PySide6.QtCore import QRect
+                    painter.drawPixmap(QRect(tx, ty, thumb_w, thumb_h), px)
+                    # "Novo" badge
+                    if has_new:
+                        _draw_badge(painter, tx + thumb_w - 10, ty - 4, t.ACCENT)
                     painter.restore()
                     return
 
-            # Placeholder
+            # Placeholder rect
             painter.setBrush(QColor(t.BG_ELEVATED))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(tx, ty, thumb_w, thumb_h, 4, 4)
+            if has_new:
+                _draw_badge(painter, tx + thumb_w - 10, ty - 4, t.ACCENT)
 
         elif col == _AnimeTableModel.COL_STATUS:
-            status_text = index.data(Qt.ItemDataRole.DisplayRole) or ""
-            if "Exibição" in status_text:
-                color = t.SUCCESS
-            elif "Finalizado" in status_text:
-                color = t.TEXT_MUTED
-            else:
-                color = t.TEXT_SECONDARY
+            status_raw  = row_data[_STATUS]
+            status_text = _status_label(status_raw)
+            color       = _status_color(status_raw)
 
-            # Chip
             font = QFont()
             font.setPixelSize(11)
             font.setWeight(QFont.Weight.DemiBold)
             painter.setFont(font)
-            fm = painter.fontMetrics()
-            tw = fm.horizontalAdvance(status_text)
-            ch = 22
-            cw = tw + 16
+            fm  = painter.fontMetrics()
+            tw  = fm.horizontalAdvance(status_text)
+            ch, cw = 22, tw + 16
             cx = r.x() + 8
             cy = r.y() + (r.height() - ch) // 2
 
@@ -160,10 +219,24 @@ class _LibraryDelegate(QStyledItemDelegate):
             painter.drawRoundedRect(cx, cy, cw, ch, 11, 11)
             painter.drawText(cx, cy, cw, ch, Qt.AlignmentFlag.AlignCenter, status_text)
 
+        elif col == _AnimeTableModel.COL_SCORE:
+            text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+            font = QFont()
+            font.setPixelSize(12)
+            font.setWeight(QFont.Weight.DemiBold)
+            painter.setFont(font)
+            score_val = row_data[_SCORE]
+            color = (t.SUCCESS if score_val and score_val >= 8
+                     else t.ACCENT if score_val and score_val >= 7
+                     else t.TEXT_SECONDARY)
+            painter.setPen(QColor(color))
+            painter.drawText(r.adjusted(8, 0, -8, 0),
+                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+
         elif col in (
             _AnimeTableModel.COL_TITLE,
-            _AnimeTableModel.COL_EP,
-            _AnimeTableModel.COL_RES,
+            _AnimeTableModel.COL_PROG,
+            _AnimeTableModel.COL_STUDIO,
             _AnimeTableModel.COL_DATE,
         ):
             text = index.data(Qt.ItemDataRole.DisplayRole) or ""
@@ -171,30 +244,167 @@ class _LibraryDelegate(QStyledItemDelegate):
             font.setPixelSize(13)
             if col == _AnimeTableModel.COL_TITLE:
                 font.setWeight(QFont.Weight.DemiBold)
+                color = t.TEXT_PRIMARY
+                # draw "NOVO" pill next to title when has_new
+                if has_new:
+                    badge_font = QFont()
+                    badge_font.setPixelSize(9)
+                    badge_font.setWeight(QFont.Weight.Bold)
+                    painter.setFont(badge_font)
+                    bfm = painter.fontMetrics()
+                    bw = bfm.horizontalAdvance("NOVO") + 8
+                    bh = 14
+                    bx = r.x() + 8
+                    by = r.y() + (r.height() - bh) // 2 - 10
+                    painter.setBrush(QColor(t.ACCENT + "33"))
+                    painter.setPen(QColor(t.ACCENT))
+                    painter.drawRoundedRect(bx, by, bw, bh, 7, 7)
+                    painter.drawText(bx, by, bw, bh, Qt.AlignmentFlag.AlignCenter, "NOVO")
+                    # shift main text down
+                    text_rect = r.adjusted(8, 6, -8, 0)
+                    painter.setFont(font)
+                    painter.setPen(QColor(color))
+                    painter.drawText(text_rect,
+                                     Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                                     painter.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width()))
+                    painter.restore()
+                    return
+            else:
+                color = t.TEXT_SECONDARY
+
             painter.setFont(font)
-            color = t.TEXT_PRIMARY if col == _AnimeTableModel.COL_TITLE else t.TEXT_SECONDARY
             painter.setPen(QColor(color))
             text_rect = r.adjusted(8, 0, -8, 0)
-            painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                           painter.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width()))
+            painter.drawText(text_rect,
+                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                             painter.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width()))
 
         painter.restore()
 
 
-def _find_cover(title_pattern: str) -> str | None:
-    try:
-        from app.core.config import COVERS_DIR as COVER_DIR
-        safe = title_pattern.replace("/", "_").replace("\\", "_")
-        for ext in (".jpg", ".png", ".jpeg", ".webp"):
-            path = os.path.join(COVER_DIR, safe + ext)
-            if os.path.exists(path):
-                return path
-    except Exception:
-        pass
-    return None
+def _draw_badge(painter: QPainter, cx: int, cy: int, color: str) -> None:
+    painter.setBrush(QColor(color))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawEllipse(cx - 5, cy, 10, 10)
+
+
+class _DetailPanel(QWidget):
+    """Right-side detail panel shown when a row is selected."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(280)
+        self.setStyleSheet(f"background: {t.BG_ELEVATED};")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 20, 16, 20)
+        root.setSpacing(12)
+
+        self._cover = QLabel()
+        self._cover.setFixedSize(180, 252)
+        self._cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cover.setStyleSheet(f"background: {t.BG_DEEP}; border-radius: 6px;")
+        root.addWidget(self._cover, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self._title = QLabel()
+        self._title.setWordWrap(True)
+        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._title.setStyleSheet(f"color: {t.TEXT_PRIMARY}; font-size: 14px; font-weight: 700; background: transparent;")
+        root.addWidget(self._title)
+
+        # Info grid
+        self._info_widget = QWidget()
+        self._info_widget.setStyleSheet("background: transparent;")
+        self._info_layout = QVBoxLayout(self._info_widget)
+        self._info_layout.setContentsMargins(0, 0, 0, 0)
+        self._info_layout.setSpacing(6)
+        root.addWidget(self._info_widget)
+
+        # Synopsis
+        syn_label = QLabel("Sinopse")
+        syn_label.setStyleSheet(f"color: {t.TEXT_MUTED}; font-size: 11px; font-weight: 600; background: transparent;")
+        root.addWidget(syn_label)
+
+        self._synopsis = QLabel()
+        self._synopsis.setWordWrap(True)
+        self._synopsis.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self._synopsis.setStyleSheet(f"color: {t.TEXT_SECONDARY}; font-size: 12px; background: transparent;")
+        self._synopsis.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self._synopsis)
+        scroll.setStyleSheet("border: none; background: transparent;")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        root.addWidget(scroll, 1)
+
+        self.clear()
+
+    def clear(self) -> None:
+        self._cover.setText("Sem capa")
+        self._cover.setPixmap(QPixmap())
+        self._title.setText("Selecione um anime")
+        self._synopsis.setText("")
+        while self._info_layout.count():
+            item = self._info_layout.takeAt(0)
+            if item and item.widget():
+                item.widget().deleteLater()
+
+    def load(self, row: tuple) -> None:
+        self.clear()
+
+        title = row[_TITLE] or row[_PATTERN]
+        self._title.setText(title)
+
+        # Cover
+        cover_path = _find_cover(row[_PATTERN])
+        if cover_path:
+            px = get_cover_pixmap_sync(cover_path, 180, 252)
+            if px and not px.isNull():
+                self._cover.setPixmap(px)
+                self._cover.setText("")
+
+        # Info rows
+        ep    = row[_LAST_EP] or 0
+        total = row[_TOTAL_EPS]
+        prog  = f"EP {ep:02d} / {total:02d}" if total else (f"EP {ep:02d}" if ep else "—")
+
+        fields = [
+            ("Progresso",  prog),
+            ("Status",     _status_label(row[_STATUS])),
+            ("Score",      f"★ {row[_SCORE]:.1f}" if row[_SCORE] else "—"),
+            ("Estúdio",    row[_STUDIO] or "—"),
+            ("Temporada",  f"{row[_SEASON]} {row[_YEAR]}" if row[_SEASON] else (str(row[_YEAR]) if row[_YEAR] else "—")),
+            ("Resolução",  row[_RES] or "—"),
+            ("Atualizado", row[_DL_DATE] or "—"),
+        ]
+
+        for label, value in fields:
+            row_w = QWidget()
+            row_w.setStyleSheet("background: transparent;")
+            rl = QHBoxLayout(row_w)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(4)
+            lbl = QLabel(label)
+            lbl.setStyleSheet(f"color: {t.TEXT_MUTED}; font-size: 11px; background: transparent;")
+            lbl.setFixedWidth(80)
+            val = QLabel(value)
+            val.setStyleSheet(f"color: {t.TEXT_PRIMARY}; font-size: 12px; font-weight: 600; background: transparent;")
+            val.setWordWrap(True)
+            rl.addWidget(lbl)
+            rl.addWidget(val, 1)
+            self._info_layout.addWidget(row_w)
+
+        # Synopsis
+        synopsis = row[_SYNOPSIS] or ""
+        if len(synopsis) > 400:
+            synopsis = synopsis[:400] + "…"
+        self._synopsis.setText(synopsis or "Sem sinopse disponível.")
 
 
 class LibraryScreen(QWidget):
+    check_requested = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._all_data: list[tuple] = []
@@ -203,24 +413,69 @@ class LibraryScreen(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Top bar
+        # ── Top bar ──────────────────────────────────────────────────────────
         topbar = QWidget()
         topbar.setFixedHeight(56)
         tbl = QHBoxLayout(topbar)
         tbl.setContentsMargins(t.CONTENT_PAD_H, 0, t.CONTENT_PAD_H, 0)
         tbl.setSpacing(t.SP3)
 
-        title = QLabel("Monitorados")
-        title.setStyleSheet(f"color: {t.TEXT_PRIMARY}; font-size: 22px; font-weight: 700; background: transparent;")
-        tbl.addWidget(title)
+        title_lbl = QLabel("Monitorados")
+        title_lbl.setStyleSheet(
+            f"color: {t.TEXT_PRIMARY}; font-size: 22px; font-weight: 700; background: transparent;"
+        )
+        tbl.addWidget(title_lbl)
         tbl.addStretch(1)
 
         self._search = QLineEdit()
         self._search.setPlaceholderText("Buscar...")
-        self._search.setFixedWidth(260)
+        self._search.setFixedWidth(240)
         self._search.setFixedHeight(34)
         self._search.textChanged.connect(self._on_search)
         tbl.addWidget(self._search)
+
+        self._count_lbl = QLabel("")
+        self._count_lbl.setStyleSheet(
+            f"color: {t.TEXT_MUTED}; font-size: 12px; background: transparent;"
+        )
+        tbl.addWidget(self._count_lbl)
+
+
+        self._check_btn = QPushButton("⟳  Verificar agora")
+        self._check_btn.setFixedHeight(34)
+        self._check_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {t.ACCENT_MUTED};
+                color: {t.ACCENT};
+                border: 1px solid {t.ACCENT};
+                border-radius: {t.RADIUS_2XL}px;
+                padding: 0 14px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{ background: {t.ACCENT}; color: #fff; }}
+            QPushButton:disabled {{ opacity: 0.5; }}
+        """)
+        self._check_btn.clicked.connect(self._on_check_now)
+        tbl.addWidget(self._check_btn)
+
+        self._organize_btn = QPushButton("⊡  Organizar agora")
+        self._organize_btn.setFixedHeight(34)
+        self._organize_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {t.BG_ELEVATED};
+                color: {t.TEXT_SECONDARY};
+                border: 1px solid {t.BG_BORDER};
+                border-radius: {t.RADIUS_2XL}px;
+                padding: 0 14px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{ background: {t.BG_BORDER}; color: {t.TEXT_PRIMARY}; }}
+            QPushButton:disabled {{ opacity: 0.5; }}
+        """)
+        self._organize_btn.clicked.connect(self._on_organize_now)
+        tbl.addWidget(self._organize_btn)
 
         root.addWidget(topbar)
 
@@ -229,6 +484,11 @@ class LibraryScreen(QWidget):
         sep.setFixedHeight(1)
         sep.setStyleSheet(f"background: {t.BG_BORDER}; border: none;")
         root.addWidget(sep)
+
+        # ── Body: table + detail panel ────────────────────────────────────────
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setHandleWidth(1)
+        self._splitter.setStyleSheet("QSplitter::handle { background: " + t.BG_BORDER + "; }")
 
         # Table
         self._model = _AnimeTableModel(self)
@@ -246,27 +506,43 @@ class LibraryScreen(QWidget):
         self._table.setMouseTracking(True)
         self._table.setSortingEnabled(True)
         self._table.verticalHeader().setVisible(False)
-        self._table.horizontalHeader().setSectionResizeMode(
-            _AnimeTableModel.COL_THUMB, QHeaderView.ResizeMode.Fixed)
-        self._table.horizontalHeader().setSectionResizeMode(
-            _AnimeTableModel.COL_TITLE, QHeaderView.ResizeMode.Stretch)
-        self._table.setColumnWidth(_AnimeTableModel.COL_THUMB, 64)
-        self._table.setColumnWidth(_AnimeTableModel.COL_EP, 80)
-        self._table.setColumnWidth(_AnimeTableModel.COL_STATUS, 130)
-        self._table.setColumnWidth(_AnimeTableModel.COL_RES, 70)
-        self._table.setColumnWidth(_AnimeTableModel.COL_DATE, 120)
-        self._table.setColumnWidth(_AnimeTableModel.COL_ACTS, 50)
         self._table.verticalHeader().setDefaultSectionSize(_LibraryDelegate.ROW_HEIGHT)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._show_context_menu)
+        self._table.selectionModel().currentRowChanged.connect(self._on_row_changed)
 
-        root.addWidget(self._table, 1)
+        hdr = self._table.horizontalHeader()
+        hdr.setSectionResizeMode(_AnimeTableModel.COL_THUMB,  QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(_AnimeTableModel.COL_TITLE,  QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(_AnimeTableModel.COL_PROG,   QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(_AnimeTableModel.COL_STATUS, QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(_AnimeTableModel.COL_SCORE,  QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(_AnimeTableModel.COL_STUDIO, QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(_AnimeTableModel.COL_DATE,   QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(_AnimeTableModel.COL_THUMB,  68)
+        self._table.setColumnWidth(_AnimeTableModel.COL_PROG,   110)
+        self._table.setColumnWidth(_AnimeTableModel.COL_STATUS, 130)
+        self._table.setColumnWidth(_AnimeTableModel.COL_SCORE,  72)
+        self._table.setColumnWidth(_AnimeTableModel.COL_STUDIO, 150)
+        self._table.setColumnWidth(_AnimeTableModel.COL_DATE,   120)
+
+        self._splitter.addWidget(self._table)
+
+        # Detail panel
+        self._detail = _DetailPanel()
+        self._splitter.addWidget(self._detail)
+        self._splitter.setStretchFactor(0, 1)
+        self._splitter.setStretchFactor(1, 0)
+
+        root.addWidget(self._splitter, 1)
 
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.timeout.connect(lambda: self._proxy.setFilterFixedString(self._search.text()))
 
         QTimer.singleShot(0, self.refresh)
+
+    # ── Data ─────────────────────────────────────────────────────────────────
 
     def refresh(self) -> None:
         run_async(self._fetch(), on_done=self._on_data)
@@ -279,10 +555,74 @@ class LibraryScreen(QWidget):
         if isinstance(result, Exception):
             return
         self._all_data = result or []
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
         self._model.set_data(self._all_data)
+        self._count_lbl.setText(f"{len(self._all_data)} monitorado(s)")
 
     def _on_search(self) -> None:
         self._debounce.start(300)
+
+    def _on_row_changed(self, current: QModelIndex, _prev: QModelIndex) -> None:
+        if not current.isValid():
+            self._detail.clear()
+            return
+        src = self._proxy.mapToSource(current)
+        row = self._model.get_row(src.row())
+        if row:
+            self._detail.load(row)
+
+    # ── Check now ────────────────────────────────────────────────────────────
+
+    def _on_check_now(self) -> None:
+        self._check_btn.setEnabled(False)
+        self._check_btn.setText("Verificando…")
+        self.check_requested.emit()
+        run_async(self._do_check(), on_done=self._on_check_done)
+
+    async def _do_check(self):
+        from app.core.downloader import check_for_updates
+        return await check_for_updates()
+
+    def _on_check_done(self, result) -> None:
+        self._check_btn.setEnabled(True)
+        self._check_btn.setText("⟳  Verificar agora")
+        if isinstance(result, Exception):
+            self._toast(f"Erro na verificação: {result}", "error")
+            return
+        triggered = result or []
+        if triggered:
+            self._toast(f"{len(triggered)} novo(s) episódio(s) encontrado(s)", "success")
+        else:
+            self._toast("Nenhum episódio novo encontrado", "info")
+        self.refresh()
+
+    # ── Organize now ──────────────────────────────────────────────────────────
+
+    def _on_organize_now(self) -> None:
+        self._organize_btn.setEnabled(False)
+        self._organize_btn.setText("Organizando…")
+        run_async(self._do_organize(), on_done=self._on_organize_done)
+
+    async def _do_organize(self):
+        from app.core.downloader import organize_downloads
+        return await organize_downloads()
+
+    def _on_organize_done(self, result) -> None:
+        self._organize_btn.setEnabled(True)
+        self._organize_btn.setText("⊡  Organizar agora")
+        if isinstance(result, Exception):
+            self._toast(f"Erro ao organizar: {result}", "error")
+            return
+        moved = result or []
+        if moved:
+            self._toast(f"{len(moved)} arquivo(s) organizado(s)", "success")
+        else:
+            self._toast("Nenhum arquivo novo para organizar", "info")
+        self.refresh()
+
+    # ── Context menu ─────────────────────────────────────────────────────────
 
     def _show_context_menu(self, pos) -> None:
         idx = self._table.indexAt(pos)
@@ -294,26 +634,26 @@ class LibraryScreen(QWidget):
             return
 
         menu = QMenu(self)
-        menu.addAction("▶  Assistir", lambda: self._action_play(row))
-        menu.addAction("✓  Marcar como visto", lambda: self._action_watched(row))
+        menu.addAction("▶  Assistir",            lambda: self._action_play(row))
+        menu.addAction("✓  Marcar como visto",    lambda: self._action_watched(row))
+        menu.addAction("⟳  Atualizar metadados", lambda: self._action_refresh_meta(row))
         menu.addSeparator()
-        menu.addAction("🔍  Buscar legenda", lambda: self._action_subtitle(row))
-        menu.addAction("🌐  Traduzir legenda", lambda: self._action_translate(row))
+        menu.addAction("🔍  Buscar legenda",      lambda: self._action_subtitle(row))
+        menu.addAction("🌐  Traduzir legenda",    lambda: self._action_translate(row))
         menu.addSeparator()
-        menu.addAction("📁  Abrir pasta", lambda: self._action_folder(row))
-        menu.addAction("✏  Editar episódio", lambda: self._action_edit(row))
+        menu.addAction("📁  Abrir pasta",         lambda: self._action_folder(row))
+        menu.addAction("✏  Editar episódio",      lambda: self._action_edit(row))
         menu.addSeparator()
-        menu.addAction("🗑  Remover", lambda: self._action_remove(row))
+        menu.addAction("🗑  Remover",             lambda: self._action_remove(row))
         menu.exec(self._table.viewport().mapToGlobal(pos))
 
-    # ── Row: id(0) title_pattern(1) last_episode(2) resolution(3) last_download_date(4)
-    #          cover_url(5) official_title(6) airing_status(7) has_new_episode(8) last_downloaded(9)
+    # ── Actions ──────────────────────────────────────────────────────────────
 
     def _action_play(self, row) -> None:
         import subprocess
         from app.core.config import get_final_dir
         final_dir = get_final_dir()
-        pattern = row[1].replace("/", "_").lower()
+        pattern = row[_PATTERN].replace("/", "_").lower()
         try:
             files = [
                 f for f in os.listdir(final_dir)
@@ -349,94 +689,103 @@ class LibraryScreen(QWidget):
             subprocess.Popen(["xdg-open", os.path.join(final_dir, lst.currentItem().text())])
 
     def _action_watched(self, row) -> None:
-        from PySide6.QtWidgets import (
-            QDialog, QDialogButtonBox, QSpinBox, QFormLayout,
-        )
-        anime_id = row[0]
-        name = row[6] or row[1]
-        current_ep = row[2] or 0
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QSpinBox, QFormLayout
+        anime_id   = row[_ID]
+        name       = row[_TITLE] or row[_PATTERN]
+        current_ep = row[_LAST_EP] or 0
 
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Marcar como visto — {name}")
         dlg.resize(340, 140)
         lay = QVBoxLayout(dlg)
-
         form = QFormLayout()
         spin = QSpinBox()
         spin.setRange(0, 99999)
         spin.setValue(current_ep)
         form.addRow("Último episódio assistido:", spin)
         lay.addLayout(form)
-
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
         lay.addWidget(btns)
-
         if dlg.exec() == QDialog.DialogCode.Accepted:
             new_ep = spin.value()
             from app.core.database import set_last_episode
             run_async(set_last_episode(anime_id, new_ep), on_done=lambda _: self.refresh())
             self._toast(f"EP {new_ep:02d} marcado para {name}", "success")
 
+    def _action_refresh_meta(self, row) -> None:
+        anime_id = row[_ID]
+        pattern  = row[_PATTERN]
+        name     = row[_TITLE] or pattern
+        from app.core.downloader import refresh_single_metadata
+        run_async(
+            refresh_single_metadata(anime_id, pattern),
+            on_done=lambda r: (
+                self.refresh(),
+                self._toast(f"Metadados atualizados — {name}", "success")
+                if not isinstance(r, Exception) else
+                self._toast(f"Erro: {r}", "error")
+            ),
+        )
+
     def _action_subtitle(self, row) -> None:
-        anime_id = row[0]
-        name = row[6] or row[1]
+        anime_id = row[_ID]
+        name     = row[_TITLE] or row[_PATTERN]
         from app.core.jobs.queue import job_queue
         run_async(
             job_queue.enqueue("subtitle", anime_id=anime_id),
             on_done=lambda r: self._toast(
                 f"Busca de legenda enfileirada — {name}" if not isinstance(r, Exception)
-                else f"Erro ao enfileirar: {r}", "info" if not isinstance(r, Exception) else "error"
+                else f"Erro ao enfileirar: {r}",
+                "info" if not isinstance(r, Exception) else "error",
             ),
         )
 
     def _action_translate(self, row) -> None:
-        anime_id = row[0]
-        name = row[6] or row[1]
+        anime_id = row[_ID]
+        name     = row[_TITLE] or row[_PATTERN]
         from app.core.jobs.queue import job_queue
         run_async(
             job_queue.enqueue("translation", anime_id=anime_id),
             on_done=lambda r: self._toast(
                 f"Tradução enfileirada — {name}" if not isinstance(r, Exception)
-                else f"Erro ao enfileirar: {r}", "info" if not isinstance(r, Exception) else "error"
+                else f"Erro ao enfileirar: {r}",
+                "info" if not isinstance(r, Exception) else "error",
             ),
         )
 
     def _action_folder(self, row) -> None:
         import subprocess
         from app.core.config import get_final_dir
-        folder = os.path.join(get_final_dir(), row[1].replace("/", "_"))
+        # Files are stored flat in final_dir (e.g. episodes/My Anime - S01E01.mkv),
+        # never in per-anime subdirectories — so open final_dir directly.
+        folder = get_final_dir()
         if os.path.isdir(folder):
             subprocess.Popen(["xdg-open", folder])
         else:
-            self._toast("Pasta não encontrada", "error")
+            self._toast("Pasta de episódios não encontrada", "error")
 
     def _action_edit(self, row) -> None:
-        from PySide6.QtWidgets import (
-            QDialog, QDialogButtonBox, QSpinBox, QFormLayout,
-        )
-        anime_id = row[0]
-        name = row[6] or row[1]
-        current_ep = row[2] or 0
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QSpinBox, QFormLayout
+        anime_id   = row[_ID]
+        name       = row[_TITLE] or row[_PATTERN]
+        current_ep = row[_LAST_EP] or 0
 
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Editar episódio — {name}")
         dlg.resize(340, 140)
         lay = QVBoxLayout(dlg)
-
         form = QFormLayout()
         spin = QSpinBox()
         spin.setRange(0, 99999)
         spin.setValue(current_ep)
         form.addRow("Último episódio:", spin)
         lay.addLayout(form)
-
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
         lay.addWidget(btns)
-
         if dlg.exec() == QDialog.DialogCode.Accepted:
             new_ep = spin.value()
             from app.core.database import set_last_episode
@@ -445,11 +794,10 @@ class LibraryScreen(QWidget):
 
     def _action_remove(self, row) -> None:
         from PySide6.QtWidgets import QMessageBox
-        anime_id = row[0]
-        name = row[6] or row[1]
+        anime_id = row[_ID]
+        name     = row[_TITLE] or row[_PATTERN]
         reply = QMessageBox.question(
-            self,
-            "Remover anime",
+            self, "Remover anime",
             f"Remover «{name}» do monitoramento?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
         )

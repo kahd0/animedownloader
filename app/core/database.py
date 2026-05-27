@@ -105,6 +105,13 @@ async def init_db():
             ("airing_status",      "TEXT DEFAULT NULL"),
             ("has_new_episode",    "INTEGER DEFAULT 0"),
             ("last_downloaded",    "INTEGER DEFAULT 0"),
+            ("total_episodes",     "INTEGER DEFAULT NULL"),
+            ("score",              "REAL DEFAULT NULL"),
+            ("studio",             "TEXT DEFAULT NULL"),
+            ("season",             "TEXT DEFAULT NULL"),
+            ("mal_year",           "INTEGER DEFAULT NULL"),
+            ("synopsis",           "TEXT DEFAULT NULL"),
+            ("last_ready",         "INTEGER DEFAULT 0"),
         ]:
             try:
                 await db.execute(f"ALTER TABLE monitored ADD COLUMN {col} {definition}")
@@ -113,6 +120,10 @@ async def init_db():
         await db.commit()
         await db.execute(
             "UPDATE monitored SET last_downloaded = last_episode WHERE last_downloaded = 0 AND last_episode > 0"
+        )
+        await db.commit()
+        await db.execute(
+            "UPDATE monitored SET last_ready = last_downloaded WHERE last_ready IS NULL OR (last_ready = 0 AND last_downloaded > 0)"
         )
         await db.commit()
 
@@ -131,11 +142,14 @@ async def set_setting(key, value):
         await db.commit()
 
 async def add_anime(title_pattern, resolution='1080p', start_episode=0):
+    # start_episode is the FIRST episode to download (inclusive).
+    # last_downloaded = start_episode - 1 so the condition (last_downloaded < ep) includes it.
+    last_dl = max(0, start_episode - 1)
     async with aiosqlite.connect(DB_PATH) as db:
         try:
             await db.execute(
                 "INSERT INTO monitored (title_pattern, resolution, last_episode, last_downloaded) VALUES (?, ?, ?, ?)",
-                (title_pattern, resolution, start_episode, start_episode)
+                (title_pattern, resolution, last_dl, last_dl)
             )
             await db.commit()
             return True
@@ -151,7 +165,8 @@ async def get_monitored_animes():
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             """SELECT id, title_pattern, last_episode, resolution, last_download_date,
-                      cover_url, official_title, airing_status, has_new_episode, last_downloaded
+                      cover_url, official_title, airing_status, has_new_episode, last_downloaded,
+                      total_episodes, score, studio, season, mal_year, synopsis, last_ready
                FROM monitored"""
         ) as cursor:
             return await cursor.fetchall()
@@ -189,13 +204,38 @@ async def update_last_episode(title_pattern, episode_num):
         )
         await db.commit()
 
-async def update_anime_metadata(anime_id, official_title, cover_url, airing_status):
+async def mark_episode_queued(title_pattern: str, episode_num: int):
+    """Mark episode as queued for download (prevents re-queueing). Does NOT trigger the watch badge."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE monitored SET last_downloaded = ? WHERE title_pattern = ? AND last_downloaded < ?",
+            (episode_num, title_pattern, episode_num)
+        )
+        await db.commit()
+
+async def mark_episode_ready(title_pattern: str, episode_num: int):
+    """Mark episode as ready to watch (file is on disk). Triggers the watch badge."""
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """UPDATE monitored
-               SET official_title = ?, cover_url = ?, airing_status = ?
+               SET last_ready = ?, last_download_date = ?, has_new_episode = 1
+               WHERE title_pattern = ? AND (last_ready IS NULL OR last_ready < ?)""",
+            (episode_num, now, title_pattern, episode_num)
+        )
+        await db.commit()
+
+async def update_anime_metadata(anime_id, official_title, cover_url, airing_status,
+                                total_episodes=None, score=None, studio=None,
+                                season=None, mal_year=None, synopsis=None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """UPDATE monitored
+               SET official_title = ?, cover_url = ?, airing_status = ?,
+                   total_episodes = ?, score = ?, studio = ?, season = ?, mal_year = ?, synopsis = ?
                WHERE id = ?""",
-            (official_title, cover_url, airing_status, anime_id)
+            (official_title, cover_url, airing_status,
+             total_episodes, score, studio, season, mal_year, synopsis, anime_id)
         )
         await db.commit()
 
@@ -312,8 +352,8 @@ async def save_translation(text_hash: str, original: str, translated: str, provi
                 (text_hash, original, translated, provider, now),
             )
             await db.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[DB] save_translation erro: {e}")
 
 
 # ---------- v2: glossary ----------
@@ -389,3 +429,73 @@ async def increment_job_retry(job_id: int):
             (now, job_id),
         )
         await db.commit()
+
+
+# ---------- v2: subtitle helpers ----------
+
+async def get_subtitled_episodes(anime_id: int) -> set[int]:
+    """Return set of episode numbers that have at least one subtitle_cache entry (any language)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT DISTINCT episode FROM subtitle_cache WHERE anime_id = ?",
+            (anime_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {r[0] for r in rows}
+
+
+async def get_ptbr_subtitled_episodes(anime_id: int) -> set[int]:
+    """Return set of episode numbers that have a PT-BR subtitle_cache entry."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT DISTINCT episode FROM subtitle_cache
+               WHERE anime_id = ? AND (LOWER(language) LIKE '%pt%' OR LOWER(language) LIKE '%por%')""",
+            (anime_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {r[0] for r in rows}
+
+
+async def get_all_pending_counts() -> dict[int, dict]:
+    """
+    Returns {anime_id: {'need_subtitle': N, 'need_translation': N}}
+    where:
+      - need_subtitle = episodes in (last_downloaded..last_episode] with no subtitle entry
+      - need_translation = episodes in (last_downloaded..last_episode] that have subtitle but no pt-br
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Get all monitored animes
+        async with db.execute(
+            "SELECT id, last_downloaded, last_episode FROM monitored"
+        ) as cursor:
+            animes = await cursor.fetchall()
+
+        # Get all subtitle cache entries
+        async with db.execute(
+            "SELECT anime_id, episode, language FROM subtitle_cache"
+        ) as cursor:
+            sub_rows = await cursor.fetchall()
+
+    # Build sets
+    subtitled: dict[int, set[int]] = {}       # anime_id -> set of ep numbers with ANY subtitle
+    ptbr_subtitled: dict[int, set[int]] = {}  # anime_id -> set of ep numbers with PT-BR subtitle
+
+    for anime_id, episode, language in sub_rows:
+        subtitled.setdefault(anime_id, set()).add(episode)
+        lang_lower = (language or "").lower()
+        if "pt" in lang_lower or "por" in lang_lower:
+            ptbr_subtitled.setdefault(anime_id, set()).add(episode)
+
+    result = {}
+    for anime_id, last_dl, last_ep in animes:
+        if last_ep <= last_dl:
+            result[anime_id] = {"need_subtitle": 0, "need_translation": 0}
+            continue
+        pending_eps = set(range(last_dl + 1, last_ep + 1))
+        with_sub = subtitled.get(anime_id, set())
+        with_ptbr = ptbr_subtitled.get(anime_id, set())
+        need_subtitle = len(pending_eps - with_sub)
+        need_translation = len((pending_eps & with_sub) - with_ptbr)
+        result[anime_id] = {"need_subtitle": need_subtitle, "need_translation": need_translation}
+
+    return result

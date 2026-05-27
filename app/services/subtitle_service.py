@@ -14,12 +14,10 @@ class SubtitleService:
 
     def _build_providers(self):
         from app.core.config import get_setting, get_subtitle_sources
-        from app.providers.subtitles.animetosho import AnimeToshoProvider
         from app.providers.subtitles.opensubtitles import OpenSubtitlesProvider
         from app.providers.subtitles.jimaku import JimakuProvider
 
         providers_map = {
-            "animetosho": AnimeToshoProvider(),
             "opensubtitles": OpenSubtitlesProvider(get_setting("opensubtitles_api_key", "")),
             "jimaku": JimakuProvider(),
         }
@@ -30,7 +28,7 @@ class SubtitleService:
                 ordered.append(providers_map[source["id"]])
 
         if not ordered:
-            ordered = [providers_map["animetosho"], providers_map["opensubtitles"]]
+            ordered = [providers_map["opensubtitles"]]
 
         return ordered
 
@@ -98,7 +96,8 @@ class SubtitleService:
         try:
             path = await self.download(best, dest)
             import hashlib
-            file_hash = hashlib.md5(open(path, "rb").read()).hexdigest()
+            with open(path, "rb") as _f:
+                file_hash = hashlib.md5(_f.read()).hexdigest()
             await db.save_subtitle_cache(anime_id, episode, best.provider, best.language, path, file_hash)
             return path
         except Exception as e:

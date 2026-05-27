@@ -90,7 +90,6 @@ class SubtitlesScreen(QWidget):
 
 class _SubtitleCard(QWidget):
     PROVIDER_COLORS = {
-        "animetosho":    t.SUCCESS,
         "opensubtitles": t.TRANSLATING,
         "jimaku":        t.WARNING,
     }

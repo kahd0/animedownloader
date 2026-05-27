@@ -1,11 +1,10 @@
 import asyncio
 import httpx
 import re
-import lzma
 import os
 import io
 import xml.etree.ElementTree as ET
-from .config import API_URL, SEARCH_URL, ANIMETOSHO_API, JIKAN_API, OPENSUBTITLES_API, get_subs_dir
+from .config import API_URL, SEARCH_URL, JIKAN_API, OPENSUBTITLES_API, get_subs_dir
 
 async def fetch_rss_feed(feed_url: str, show_name: str = "") -> list[dict]:
     """Fetches and parses an RSS feed. Returns items in process_releases() format."""
@@ -117,6 +116,33 @@ async def search_anime_history(query):
             print(f"Error searching anime history: {e}")
             return []
 
+async def search_anime_jikan(query: str, limit: int = 20) -> list[dict]:
+    """Busca animes pelo título no Jikan (MyAnimeList). Retorna lista de dicts."""
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(
+                f"{JIKAN_API}/anime",
+                params={"q": query, "limit": limit, "order_by": "popularity", "sort": "asc"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            results = []
+            for item in resp.json().get("data", []):
+                results.append({
+                    "title":         item.get("title_english") or item.get("title"),
+                    "title_jp":      item.get("title"),
+                    "episode_count": item.get("episodes"),
+                    "cover_url":     item.get("images", {}).get("jpg", {}).get("image_url"),
+                    "airing_status": item.get("status"),
+                    "year":          item.get("year"),
+                    "mal_id":        item.get("mal_id"),
+                })
+            return results
+        except Exception as e:
+            print(f"Erro na busca Jikan: {e}")
+            return []
+
+
 async def fetch_anime_metadata(title_pattern):
     """Busca título oficial, status e URL da capa no Jikan (MyAnimeList)."""
     async with httpx.AsyncClient() as client:
@@ -132,10 +158,18 @@ async def fetch_anime_metadata(title_pattern):
                 return None
             # Prefer currently airing entry so S2 isn't replaced by S1's metadata
             item = next((d for d in data if d.get("status") == "Currently Airing"), data[0])
+            studios = [s.get("name") for s in item.get("studios", []) if s.get("name")]
+            season_raw = item.get("season") or ""
             return {
-                "official_title": item.get("title_english") or item.get("title"),
-                "cover_url": item.get("images", {}).get("jpg", {}).get("large_image_url"),
-                "airing_status": item.get("status"),
+                "official_title":  item.get("title_english") or item.get("title"),
+                "cover_url":       item.get("images", {}).get("jpg", {}).get("large_image_url"),
+                "airing_status":   item.get("status"),
+                "total_episodes":  item.get("episodes"),
+                "score":           item.get("score"),
+                "studio":          studios[0] if studios else None,
+                "season":          season_raw.capitalize() if season_raw else None,
+                "mal_year":        item.get("year"),
+                "synopsis":        item.get("synopsis"),
             }
         except Exception as e:
             print(f"Erro ao buscar metadados Jikan: {e}")
@@ -162,77 +196,6 @@ def _lang_from_filename(filename):
         return 'eng'
     return None
 
-async def _fetch_animetosho_entry(client, entry_id, ep_regex, seen_ids, series_name="", ep_str=""):
-    """Busca detalhes de uma entrada e extrai legendas."""
-    try:
-        resp = await client.get(ANIMETOSHO_API, params={"show": "torrent", "id": entry_id}, timeout=10)
-        det = resp.json()
-        if not det or not isinstance(det, dict):
-            return []
-        subs = []
-        for f in det.get('files', []):
-            if not f or not ep_regex.search(f.get('filename', '')):
-                continue
-            parent_stem = os.path.splitext(f.get('filename', ''))[0]
-            for a in f.get('attachments', []):
-                if a.get('type') != 'subtitle' or not a.get('id') or a['id'] in seen_ids:
-                    continue
-                attach_fname = a.get('filename', '')
-                # Se o nome da legenda tem número de episódio explícito, deve bater com o alvo
-                if attach_fname and re.search(r'[-\s]\d{2}(?:[^p\d]|$)', attach_fname):
-                    if not ep_regex.search(attach_fname):
-                        continue
-                # Usa nome do vídeo pai como fallback de exibição quando a legenda não tem nome
-                display_filename = attach_fname or parent_stem or f"{series_name} - Ep {ep_str}"
-                info = a.get('info', {})
-                if not info.get('lang'):
-                    inferred = _lang_from_filename(a.get('filename', ''))
-                    if inferred:
-                        info = {**info, 'lang': inferred}
-                subs.append({
-                    'source': 'animetosho',
-                    'id': a['id'],
-                    'filename': display_filename,
-                    'info': info,
-                    '_dl_info': {'id': a['id']},
-                })
-                seen_ids.add(a['id'])
-        return subs
-    except Exception as e:
-        print(f"AnimeTosho detail erro ({entry_id}): {e}")
-        return []
-
-async def _search_animetosho(series_name, ep_num, ep_str):
-    """Busca legendas no AnimeTosho com múltiplas queries e detalhes em paralelo."""
-    queries = [
-        f'{series_name} {ep_str}',
-        f'{series_name} pt-br {ep_str}',
-        f'{series_name} Brazilian {ep_str}',
-    ]
-    ep_regex = _make_ep_regex(ep_num)
-    all_subs, seen_ids = [], set()
-
-    async with httpx.AsyncClient() as client:
-        for q in queries:
-            try:
-                resp = await client.get(ANIMETOSHO_API, params={"q": q}, timeout=10)
-                data = resp.json()
-                if not data or not isinstance(data, list):
-                    continue
-                matching = [e for e in data[:10] if e and ep_regex.search(e.get('title', ''))]
-                if not matching:
-                    continue
-                results = await asyncio.gather(
-                    *[_fetch_animetosho_entry(client, e['id'], ep_regex, seen_ids, series_name, ep_str) for e in matching],
-                    return_exceptions=True,
-                )
-                for r in results:
-                    if isinstance(r, list):
-                        all_subs.extend(r)
-            except Exception as e:
-                print(f"AnimeTosho search erro ({q}): {e}")
-
-    return all_subs
 
 def _title_words(text):
     """Retorna palavras significativas (4+ chars) de um texto, sem stop words."""
@@ -263,7 +226,7 @@ async def _search_opensubtitles(series_name, ep_num, api_key):
                 params={
                     "query": series_name,
                     "episode_number": ep_num,
-                    "languages": "pt-BR",   # só PT-BR — inglês já vem do AnimeTosho
+                    "languages": "pt-BR",
                     "type": "episode",
                 },
                 headers={
@@ -320,18 +283,11 @@ async def find_subtitles(show_name, ep_num):
     series_name = _normalize_series_name(show_name)
     ep_str = str(ep_num).zfill(2)
     all_subs = []
-    has_ptbr = False
 
     for source in get_subtitle_sources():
         if not source.get("enabled"):
             continue
-        if source["id"] == "animetosho":
-            subs = await _search_animetosho(series_name, ep_num, ep_str)
-            all_subs.extend(subs)
-            has_ptbr = any(s.get("info", {}).get("lang") == "por" for s in subs)
-        elif source["id"] == "opensubtitles":
-            if has_ptbr:
-                continue
+        if source["id"] == "opensubtitles":
             api_key = get_setting("opensubtitles_api_key", "")
             if api_key:
                 subs = await _search_opensubtitles(series_name, ep_num, api_key)
@@ -349,22 +305,6 @@ def _resolve_sub_path(series_name, ep_str, ext, target_video_path=None):
     os.makedirs(subs_dir, exist_ok=True)
     safe = re.sub(r'[^\w\s-]', '', series_name).strip().lower()
     return os.path.join(subs_dir, f"{safe}_ep{ep_str}.{ext}")
-
-async def _download_animetosho_sub(sub, series_name, ep_str, target_video_path=None):
-    try:
-        dl_url = f"https://storage.animetosho.org/attach/{sub['id']:08x}/file.xz"
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(dl_url, timeout=15)
-            resp.raise_for_status()
-            data = lzma.decompress(resp.content)
-        ext = sub['info'].get('codec', 'ass').lower()
-        filename = _resolve_sub_path(series_name, ep_str, ext, target_video_path)
-        with open(filename, 'wb') as f:
-            f.write(data)
-        return filename
-    except Exception as e:
-        print(f"Erro download AnimeTosho: {e}")
-        return None
 
 async def _download_opensubtitles_sub(sub, series_name, ep_str, target_video_path=None):
     try:
@@ -406,4 +346,4 @@ async def download_chosen_subtitle(sub, series_name, ep_str, target_video_path=N
     Caso contrário, salva na pasta temporária de legendas."""
     if sub.get('source') == 'opensubtitles':
         return await _download_opensubtitles_sub(sub, series_name, ep_str, target_video_path)
-    return await _download_animetosho_sub(sub, series_name, ep_str, target_video_path)
+    return None

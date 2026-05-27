@@ -1,3 +1,6 @@
+import os
+os.environ["QT_LOGGING_RULES"] = "qt.qpa.theme=false"
+
 import sys
 from PySide6.QtWidgets import QApplication
 from app.ui.main_window import AnimeMonitorApp, create_app
