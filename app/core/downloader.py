@@ -402,6 +402,11 @@ async def organize_downloads():
                         else:
                             moved_files.append(f"Vídeo: {filename}")
 
+                        # Mark episode as ready on disk (update last_ready in DB)
+                        ep_num = extract_episode_number(new_name)
+                        if ep_num is not None:
+                            await mark_episode_ready(pattern, ep_num)
+
                         # Limpa pasta de origem se ficou vazia e não é a pasta raiz
                         old_dir = os.path.dirname(old_path)
                         if os.path.abspath(old_dir) != os.path.abspath(source_dir):
