@@ -16,7 +16,6 @@ NAV_ITEMS = [
     ("dashboard",  "⊞",  "Dashboard"),
     ("library",    "☰",  "Monitorados"),
     ("downloads",  "⬇",  "Downloads"),
-    ("subtitles",  "CC", "Legendas"),
     ("pipeline",   "◎",  "Pipeline"),
     ("logs",       "≡",  "Logs"),
     ("settings",   "⚙",  "Configurações"),

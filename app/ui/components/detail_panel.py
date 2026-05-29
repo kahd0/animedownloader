@@ -747,18 +747,11 @@ class DetailPanel(QDialog):
                     QPushButton:hover {{ color: {t.TEXT_PRIMARY}; border-color: {t.TRANSLATING}; }}
                 """)
 
-    def _start_translation(self, filename: str, ep_num: int = None) -> None:
+    def _start_translation(self, filename: str, ep_num: int) -> None:
         from app.core.config import get_final_dir
         from app.ui.components.toast import ToastManager
         video_path = os.path.join(get_final_dir(), filename)
         anime_id = self._anime_id
-
-        if ep_num is None:
-            # Fallback: no ep tracking, just run directly
-            from app.core.downloader import translate_video_subtitle
-            ToastManager.instance().show("Iniciando tradução...", "info")
-            run_async(translate_video_subtitle(video_path))
-            return
 
         key = (anime_id, ep_num)
         if key in _active_translations:

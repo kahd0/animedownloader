@@ -73,7 +73,6 @@ class AnimeMonitorApp(QMainWindow):
         from app.ui.screens.dashboard  import DashboardScreen
         from app.ui.screens.library    import LibraryScreen
         from app.ui.screens.downloads  import DownloadsScreen
-        from app.ui.screens.subtitles  import SubtitlesScreen
         from app.ui.screens.pipeline   import PipelineScreen
         from app.ui.screens.logs       import LogsScreen
         from app.ui.screens.settings   import SettingsScreen
@@ -82,7 +81,6 @@ class AnimeMonitorApp(QMainWindow):
             ("dashboard",  DashboardScreen()),
             ("library",    LibraryScreen()),
             ("downloads",  DownloadsScreen()),
-            ("subtitles",  SubtitlesScreen()),
             ("pipeline",   PipelineScreen()),
             ("logs",       LogsScreen()),
             ("settings",   SettingsScreen()),
