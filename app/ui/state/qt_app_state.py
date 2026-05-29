@@ -16,7 +16,7 @@ class QtAppState(QObject):
     media_organized     = Signal(int, int, str)        # anime_id, episode, path
     episode_ready       = Signal(int, int, str)        # anime_id, episode, title
     pipeline_failed     = Signal(int, int, str, str)   # anime_id, episode, step, error
-    log_message         = Signal(str, str)             # message, color
+    log_message         = Signal(str, str, str)         # message, level, source
 
     def __init__(self):
         super().__init__()
@@ -93,9 +93,14 @@ class QtAppState(QObject):
             None,
         )
 
-    def _on_log(self, message: str, color: str) -> None:
+    def _on_log(self, message: str, color: str, source: str = "pipeline") -> None:
+        _LEVEL_MAP = {
+            "red": "ERROR", "yellow": "WARNING",
+            "green": "SUCCESS", "cyan": "INFO", "blue": "INFO", "white": "INFO",
+        }
+        level = _LEVEL_MAP.get(color, "INFO")
         _get_bridge()._callback_ready.emit(
-            lambda _: self.log_message.emit(message, color),
+            lambda _: self.log_message.emit(message, level, source),
             None,
         )
 

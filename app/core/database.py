@@ -461,6 +461,36 @@ async def get_ptbr_subtitled_episodes(anime_id: int) -> set[int]:
             return {r[0] for r in rows}
 
 
+# ---------- v2: logs ----------
+
+async def save_log(level: str, source: str, message: str) -> None:
+    now = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO logs (level, source, message, created_at) VALUES (?, ?, ?, ?)",
+            (level, source, message, now),
+        )
+        await db.commit()
+
+
+async def get_logs(limit: int = 2000) -> list[tuple]:
+    """Return (id, level, source, message, created_at) ordered oldest-first."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT id, level, source, message, created_at FROM logs
+               ORDER BY id DESC LIMIT ?""",
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return list(reversed(rows))
+
+
+async def clear_logs() -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM logs")
+        await db.commit()
+
+
 async def get_all_pending_counts() -> dict[int, dict]:
     """
     Returns {anime_id: {'need_subtitle': N, 'need_translation': N}}

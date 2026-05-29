@@ -11,17 +11,22 @@ class AppState:
     schedule UI updates via app.after() if touching tkinter widgets.
     """
 
+    _LEVEL_MAP = {
+        "red": "ERROR", "yellow": "WARNING",
+        "green": "SUCCESS", "cyan": "INFO", "blue": "INFO", "white": "INFO",
+    }
+
     def __init__(self):
         self._refresh_callbacks: list[Callable] = []
-        self._log_callbacks: list[Callable[[str, str], None]] = []
+        self._log_callbacks: list[Callable[[str, str, str], None]] = []
         self._setup_bus_subscriptions()
 
     def on_refresh(self, callback: Callable) -> None:
         """Register a callback to be called when anime data should be reloaded."""
         self._refresh_callbacks.append(callback)
 
-    def on_log(self, callback: Callable[[str, str], None]) -> None:
-        """Register a callback(message, color) for log messages from the pipeline."""
+    def on_log(self, callback: Callable[[str, str, str], None]) -> None:
+        """Register a callback(message, color, source) for log messages from the pipeline."""
         self._log_callbacks.append(callback)
 
     def _setup_bus_subscriptions(self) -> None:
@@ -47,38 +52,51 @@ class AppState:
         bus.subscribe(PipelineFailed, self._on_pipeline_failed)
 
     async def _on_episode_detected(self, event) -> None:
-        self._log(f"Novo episódio detectado: {event.title_pattern} EP{event.episode:02d}", "cyan")
+        self._log(f"Novo episódio detectado: {event.title_pattern} EP{event.episode:02d}", "cyan", "rss")
 
     async def _on_torrent_added(self, event) -> None:
-        self._log(f"Torrent adicionado — EP{event.episode:02d} [{event.torrent_hash[:8]}...]", "blue")
+        self._log(f"Torrent adicionado — EP{event.episode:02d} [{event.torrent_hash[:8]}...]", "blue", "torrent")
 
     async def _on_torrent_completed(self, event) -> None:
-        self._log(f"Download concluído: {event.name}", "green")
+        self._log(f"Download concluído: {event.name}", "green", "download")
 
     async def _on_subtitle_found(self, event) -> None:
         lang = event.language.upper()
-        self._log(f"Legenda encontrada [{lang}] — EP{event.episode:02d}", "green")
+        self._log(f"Legenda encontrada [{lang}] — EP{event.episode:02d}", "green", "subtitle")
 
     async def _on_subtitle_translated(self, event) -> None:
-        self._log(f"Legenda traduzida — EP{event.episode:02d}", "green")
+        self._log(f"Legenda traduzida — EP{event.episode:02d}", "green", "translation")
 
     async def _on_media_organized(self, event) -> None:
         import os
-        self._log(f"Organizado: {os.path.basename(event.final_path)}", "green")
+        self._log(f"Organizado: {os.path.basename(event.final_path)}", "green", "organize")
 
     async def _on_episode_ready(self, event) -> None:
-        self._log(f"✓ EP{event.episode:02d} pronto — {event.title_pattern}", "green")
+        self._log(f"✓ EP{event.episode:02d} pronto — {event.title_pattern}", "green", "pipeline")
         self._trigger_refresh()
 
     async def _on_pipeline_failed(self, event) -> None:
-        self._log(f"[ERRO] {event.step} — EP{event.episode:02d}: {event.error}", "red")
+        self._log(f"[ERRO] {event.step} — EP{event.episode:02d}: {event.error}", "red", "pipeline")
 
-    def _log(self, message: str, color: str = "white") -> None:
+    def _log(self, message: str, color: str = "white", source: str = "pipeline") -> None:
+        level = self._LEVEL_MAP.get(color, "INFO")
+        try:
+            loop = asyncio.get_event_loop()
+            loop.create_task(self._persist_log(level, source, message))
+        except Exception:
+            pass
         for cb in self._log_callbacks:
             try:
-                cb(message, color)
+                cb(message, color, source)
             except Exception:
                 pass
+
+    async def _persist_log(self, level: str, source: str, message: str) -> None:
+        try:
+            from app.core.database import save_log
+            await save_log(level, source, message)
+        except Exception:
+            pass
 
     def _trigger_refresh(self) -> None:
         for cb in self._refresh_callbacks:

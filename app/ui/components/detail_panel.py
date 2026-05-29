@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import weakref
 
 from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtGui import QColor, QPainter
@@ -13,6 +14,57 @@ from PySide6.QtWidgets import (
 
 from app.ui.design import tokens as t
 from app.utils.async_bridge import run_async
+
+# (anime_id, ep_num) -> 'translating' | 'queued'
+_active_translations: dict[tuple[int, int], str] = {}
+_translation_queue: list[tuple[int, int, str]] = []  # (anime_id, ep_num, video_path)
+_translation_running: bool = False
+_open_panels: list = []  # weakrefs to open DetailPanel instances
+
+
+def _get_live_panels() -> list:
+    alive = [r for r in _open_panels if r() is not None]
+    _open_panels[:] = alive
+    return [r() for r in alive]
+
+
+def _notify_panel_state(anime_id: int, ep_num: int, status: str) -> None:
+    for panel in _get_live_panels():
+        if panel._anime_id == anime_id:
+            try:
+                panel._update_tl_btn_state(ep_num, status)
+            except RuntimeError:
+                pass
+
+
+def _process_translation_queue() -> None:
+    global _translation_running
+    if _translation_running or not _translation_queue:
+        return
+    anime_id, ep_num, video_path = _translation_queue.pop(0)
+    _translation_running = True
+    _active_translations[(anime_id, ep_num)] = 'translating'
+    _notify_panel_state(anime_id, ep_num, 'translating')
+
+    from app.core.downloader import translate_video_subtitle
+    from app.utils.async_bridge import run_async as _run_async
+    from app.ui.components.toast import ToastManager
+
+    def _on_done(result):
+        global _translation_running
+        _translation_running = False
+        ok = not isinstance(result, Exception) and result.get("ok", False)
+        _active_translations.pop((anime_id, ep_num), None)
+        _notify_panel_state(anime_id, ep_num, 'done' if ok else 'error')
+        if isinstance(result, Exception):
+            ToastManager.instance().show(f"Erro na tradução EP {ep_num:02d}: {result}", "error")
+        elif not ok:
+            ToastManager.instance().show(f"Falha EP {ep_num:02d}: {result.get('error')}", "error")
+        else:
+            ToastManager.instance().show(f"EP {ep_num:02d} traduzido com sucesso!", "success")
+        _process_translation_queue()
+
+    _run_async(translate_video_subtitle(video_path), on_done=_on_done)
 
 
 class DetailPanel(QDialog):
@@ -30,9 +82,11 @@ class DetailPanel(QDialog):
         self._last_ep   = last_ep or 0
         self._last_dl   = last_dl or 0
         self._last_ready = last_ready
-        # Episodes present on disk but not yet marked as watched by the user
-        self._unwatched_eps = self._eps_from_disk(self._last_ep)
-        self._has_video_files = bool(self._find_video_files())
+        self._all_eps = self._all_eps_on_disk()  # list of (ep_num, filename)
+        self._tl_btns: dict[int, QPushButton] = {}
+        self._tl_timers: dict[int, QTimer] = {}
+        self._tl_step: dict[int, int] = {}
+        _open_panels.append(weakref.ref(self))
 
         self.setWindowTitle(self._title)
         self.setModal(True)
@@ -155,114 +209,53 @@ class DetailPanel(QDialog):
         meta.setStyleSheet(f"color: {t.TEXT_SECONDARY}; font-size: 13px; background: transparent;")
         rl.addWidget(meta)
 
-        # Primary actions
-        btn_row = QWidget()
-        btn_row.setStyleSheet("background: transparent;")
-        brl = QHBoxLayout(btn_row)
-        brl.setContentsMargins(0, 0, 0, 0)
-        brl.setSpacing(t.SP3)
+        # Episodes section
+        sep_eps = QFrame()
+        sep_eps.setFrameShape(QFrame.Shape.HLine)
+        sep_eps.setFixedHeight(1)
+        sep_eps.setStyleSheet(f"background: {t.BG_BORDER}; border: none;")
+        rl.addWidget(sep_eps)
 
-        play_btn = QPushButton("▶  ASSISTIR")
-        play_btn.setFixedHeight(42)
-        play_btn.setFixedWidth(160)
-        play_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {t.ACCENT};
-                color: white;
-                border: none;
-                border-radius: {t.RADIUS_MD}px;
-                font-size: 14px;
-                font-weight: 700;
-            }}
-            QPushButton:hover {{ background: {t.ACCENT_HOVER}; }}
-        """)
-        play_btn.clicked.connect(self._action_play)
-        play_btn.setVisible(self._has_video_files)
-
-        watched_btn = QPushButton("✓  JÁ VISTO")
-        watched_btn.setFixedHeight(42)
-        watched_btn.setFixedWidth(140)
-        watched_btn.clicked.connect(self._action_watched)
-        watched_btn.setVisible(bool(self._unwatched_eps))
-
-        brl.addWidget(play_btn)
-        brl.addWidget(watched_btn)
-        brl.addStretch(1)
-        rl.addWidget(btn_row)
-
-        # Subtitle section
-        sep1 = QFrame()
-        sep1.setFrameShape(QFrame.Shape.HLine)
-        sep1.setFixedHeight(1)
-        sep1.setStyleSheet(f"background: {t.BG_BORDER}; border: none;")
-        rl.addWidget(sep1)
-
-        sub_label = QLabel("LEGENDA")
-        sub_label.setStyleSheet(
+        eps_label = QLabel("EPISÓDIOS")
+        eps_label.setStyleSheet(
             f"color: {t.TEXT_MUTED}; font-size: 11px; font-weight: 600;"
             f" letter-spacing: 1px; background: transparent;"
         )
-        rl.addWidget(sub_label)
+        rl.addWidget(eps_label)
 
-        sub_row = QWidget()
-        sub_row.setStyleSheet("background: transparent;")
-        srl = QHBoxLayout(sub_row)
-        srl.setContentsMargins(0, 0, 0, 0)
-        srl.setSpacing(t.SP2)
+        ep_scroll = QScrollArea()
+        ep_scroll.setWidgetResizable(True)
+        ep_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_h = max(min(len(self._all_eps) * 48 + 8, 240), 120)
+        ep_scroll.setFixedHeight(scroll_h)
+        ep_scroll.setStyleSheet(f"""
+            QScrollArea {{ background: transparent; border: none; }}
+            QScrollBar:vertical {{
+                background: {t.BG_ELEVATED}; width: 4px; border-radius: 2px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {t.BG_BORDER}; border-radius: 2px;
+            }}
+        """)
+        ep_container = QWidget()
+        ep_container.setStyleSheet("background: transparent;")
+        ep_vl = QVBoxLayout(ep_container)
+        ep_vl.setContentsMargins(0, 4, 0, 4)
+        ep_vl.setSpacing(4)
 
-        sub_btn = QPushButton("🔍  Buscar Online")
-        sub_btn.setFixedHeight(34)
-        sub_btn.clicked.connect(self._action_subtitle)
-
-        tl_btn = QPushButton("🌐  Traduzir PT-BR")
-        tl_btn.setFixedHeight(34)
-        tl_btn.clicked.connect(self._action_translate)
-
-        srl.addWidget(sub_btn)
-        srl.addWidget(tl_btn)
-        srl.addStretch(1)
-        rl.addWidget(sub_row)
-
-        # Pending episodes section
-        if self._unwatched_eps:
-            sep_eps = QFrame()
-            sep_eps.setFrameShape(QFrame.Shape.HLine)
-            sep_eps.setFixedHeight(1)
-            sep_eps.setStyleSheet(f"background: {t.BG_BORDER}; border: none;")
-            rl.addWidget(sep_eps)
-
-            eps_label = QLabel("EPISÓDIOS PENDENTES")
-            eps_label.setStyleSheet(
-                f"color: {t.TEXT_MUTED}; font-size: 11px; font-weight: 600;"
-                f" letter-spacing: 1px; background: transparent;"
-            )
-            rl.addWidget(eps_label)
-
-            ep_scroll = QScrollArea()
-            ep_scroll.setWidgetResizable(True)
-            ep_scroll.setFrameShape(QFrame.Shape.NoFrame)
-            ep_scroll.setFixedHeight(min(len(self._unwatched_eps) * 44 + 8, 180))
-            ep_scroll.setStyleSheet(f"""
-                QScrollArea {{ background: transparent; border: none; }}
-                QScrollBar:vertical {{
-                    background: {t.BG_ELEVATED}; width: 4px; border-radius: 2px;
-                }}
-                QScrollBar::handle:vertical {{
-                    background: {t.BG_BORDER}; border-radius: 2px;
-                }}
-            """)
-            ep_container = QWidget()
-            ep_container.setStyleSheet("background: transparent;")
-            ep_vl = QVBoxLayout(ep_container)
-            ep_vl.setContentsMargins(0, 4, 0, 4)
-            ep_vl.setSpacing(4)
-
-            for ep_num in reversed(self._unwatched_eps):  # newest first
-                row = self._make_episode_row(ep_num)
+        if self._all_eps:
+            for ep_num, filename in self._all_eps:  # already sorted newest-first
+                row = self._make_episode_row(ep_num, filename)
                 ep_vl.addWidget(row)
+        else:
+            empty_lbl = QLabel("Nenhum episódio na pasta")
+            empty_lbl.setStyleSheet(
+                f"color: {t.TEXT_MUTED}; font-size: 12px; background: transparent; border: none;"
+            )
+            ep_vl.addWidget(empty_lbl)
 
-            ep_scroll.setWidget(ep_container)
-            rl.addWidget(ep_scroll)
+        ep_scroll.setWidget(ep_container)
+        rl.addWidget(ep_scroll)
 
         # Utility actions
         sep2 = QFrame()
@@ -311,7 +304,7 @@ class DetailPanel(QDialog):
 
     # ── Episode row helpers ──────────────────────────────────────────────────
 
-    def _make_episode_row(self, ep_num: int) -> QWidget:
+    def _make_episode_row(self, ep_num: int, filename: str) -> QWidget:
         row = QWidget()
         row.setFixedHeight(40)
         row.setStyleSheet(f"""
@@ -328,16 +321,24 @@ class DetailPanel(QDialog):
         ep_lbl = QLabel(f"EP {ep_num:02d}")
         ep_lbl.setFixedWidth(52)
         ep_lbl.setStyleSheet(
-            f"color: {t.TEXT_PRIMARY}; font-size: 13px; font-weight: 600;"
+            f"color: {t.TEXT_PRIMARY}; font-size: 13px; font-weight: bold;"
             f" background: transparent; border: none;"
         )
         hl.addWidget(ep_lbl)
+
+        if self._has_ptbr_subtitle(filename):
+            badge = QLabel("PT-BR")
+            badge.setStyleSheet(
+                "background: #1a7a4a; color: white; font-size: 9px;"
+                " padding: 2px 5px; border-radius: 3px; border: none;"
+            )
+            hl.addWidget(badge)
 
         hl.addStretch(1)
 
         play_btn = QPushButton("▶ Assistir")
         play_btn.setFixedHeight(28)
-        play_btn.setFixedWidth(90)
+        play_btn.setFixedWidth(80)
         play_btn.setStyleSheet(f"""
             QPushButton {{
                 background: {t.ACCENT};
@@ -352,9 +353,26 @@ class DetailPanel(QDialog):
         play_btn.clicked.connect(lambda _, e=ep_num: self._play_episode(e))
         hl.addWidget(play_btn)
 
-        sub_btn = QPushButton("\U0001f50d Legenda")
+        watched_btn = QPushButton("✓ Visto")
+        watched_btn.setFixedHeight(28)
+        watched_btn.setFixedWidth(80)
+        watched_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {t.BG_ELEVATED};
+                color: {t.TEXT_SECONDARY};
+                border: 1px solid {t.BG_BORDER};
+                border-radius: {t.RADIUS_SM}px;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{ color: {t.SUCCESS}; border-color: {t.SUCCESS}; }}
+        """)
+        watched_btn.clicked.connect(lambda _, e=ep_num: self._mark_watched_for(e))
+        watched_btn.setVisible(ep_num > self._last_ep)
+        hl.addWidget(watched_btn)
+
+        sub_btn = QPushButton("🔍 Legenda")
         sub_btn.setFixedHeight(28)
-        sub_btn.setFixedWidth(90)
+        sub_btn.setFixedWidth(80)
         sub_btn.setStyleSheet(f"""
             QPushButton {{
                 background: {t.BG_ELEVATED};
@@ -368,9 +386,9 @@ class DetailPanel(QDialog):
         sub_btn.clicked.connect(lambda _, e=ep_num: self._search_subtitle_for(e))
         hl.addWidget(sub_btn)
 
-        tl_btn = QPushButton("\U0001f310 Traduzir")
+        tl_btn = QPushButton("🌐 Traduzir")
         tl_btn.setFixedHeight(28)
-        tl_btn.setFixedWidth(90)
+        tl_btn.setFixedWidth(80)
         tl_btn.setStyleSheet(f"""
             QPushButton {{
                 background: {t.BG_ELEVATED};
@@ -383,6 +401,11 @@ class DetailPanel(QDialog):
         """)
         tl_btn.clicked.connect(lambda _, e=ep_num: self._translate_for(e))
         hl.addWidget(tl_btn)
+        self._tl_btns[ep_num] = tl_btn
+
+        state = _active_translations.get((self._anime_id, ep_num))
+        if state:
+            self._update_tl_btn_state(ep_num, state)
 
         return row
 
@@ -498,6 +521,80 @@ class DetailPanel(QDialog):
         else:
             QMessageBox.information(self, "Traduzir", f"Nenhum arquivo encontrado para EP {ep_num:02d}.")
 
+    # ── Disk helpers ─────────────────────────────────────────────────────────
+
+    def _all_eps_on_disk(self) -> list[tuple[int, str]]:
+        """Return [(ep_num, filename)] for all matching video files, sorted newest-first."""
+        try:
+            from app.core.config import get_final_dir
+            from app.core.naming import matches_pattern
+            from app.utils.episode_parser import extract_episode_number
+            final_dir = get_final_dir()
+            if not os.path.isdir(final_dir):
+                return []
+            exts = {".mkv", ".mp4", ".avi", ".mov", ".wmv"}
+            eps = []
+            for f in os.listdir(final_dir):
+                if os.path.splitext(f)[1].lower() not in exts:
+                    continue
+                if not matches_pattern(f, self._title_pat):
+                    continue
+                ep = extract_episode_number(f)
+                if ep is not None:
+                    eps.append((ep, f))
+            return sorted(eps, reverse=True)
+        except Exception:
+            return []
+
+    def _has_ptbr_subtitle(self, filename: str) -> bool:
+        """Return True if a PT-BR subtitle file exists alongside the given video filename."""
+        from app.core.config import get_final_dir
+        final_dir = get_final_dir()
+        base = os.path.splitext(os.path.join(final_dir, filename))[0]
+        for ext in (".srt", ".ass", ".sub", ".ssa", ".vtt"):
+            for candidate in (base + ".pt" + ext, base + ".pt-br" + ext, base + ".ptbr" + ext):
+                if os.path.exists(candidate):
+                    return True
+        return False
+
+    def _mark_watched_for(self, ep_num: int) -> None:
+        from app.core.database import set_last_episode, clear_new_episode_flag
+
+        # Find files for this specific episode
+        all_files = self._find_video_files()
+        pattern = re.compile(
+            rf'[^0-9]{ep_num:02d}[^0-9]|[^0-9]{ep_num}[^0-9]|^{ep_num:02d}[^0-9]'
+        )
+        ep_files = [f for f in all_files if pattern.search(f)] or []
+
+        delete_files = False
+        if ep_files:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Marcar como Visto")
+            msg.setText(f"Marcar <b>EP {ep_num:02d}</b> de {self._title} como visto?")
+            msg.setInformativeText(
+                f"{len(ep_files)} arquivo(s) encontrado(s) para este episódio.\n"
+                "Deseja apagar os arquivos de vídeo e legendas do HD?"
+            )
+            msg.setIcon(QMessageBox.Icon.Question)
+            keep_btn   = msg.addButton("Manter arquivos", QMessageBox.ButtonRole.NoRole)
+            delete_btn = msg.addButton("Apagar do HD",    QMessageBox.ButtonRole.DestructiveRole)
+            cancel_btn = msg.addButton("Cancelar",        QMessageBox.ButtonRole.RejectRole)
+            msg.setDefaultButton(keep_btn)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked is cancel_btn:
+                return
+            delete_files = (clicked is delete_btn)
+
+        run_async(set_last_episode(self._anime_id, ep_num))
+        run_async(clear_new_episode_flag(self._anime_id))
+
+        if delete_files:
+            self._delete_episode_files(ep_files)
+
+        self.close()
+
     # ── Actions ──────────────────────────────────────────────────────────────
 
     def _eps_from_disk(self, last_watched: int) -> list[int]:
@@ -535,84 +632,6 @@ class DetailPanel(QDialog):
             if os.path.splitext(f)[1].lower() in exts and matches_pattern(f, self._title_pat)
         )
 
-    def _action_play(self) -> None:
-        files = self._find_video_files()
-        if not files:
-            QMessageBox.information(self, "Assistir", "Nenhum episódio encontrado na pasta de episódios.")
-            return
-        if len(files) == 1:
-            from app.core.config import get_final_dir
-            from app.core.downloader import open_path
-            open_path(os.path.join(get_final_dir(), files[0]))
-        else:
-            from PySide6.QtWidgets import QListWidget, QDialogButtonBox
-            dlg = QDialog(self)
-            dlg.setWindowTitle("Selecionar Episódio")
-            dlg.resize(460, 320)
-            dlg.setStyleSheet(f"background: {t.BG_SURFACE}; color: {t.TEXT_PRIMARY};")
-            vl = QVBoxLayout(dlg)
-            lbl = QLabel("Selecione o episódio para assistir:")
-            lbl.setStyleSheet(f"color: {t.TEXT_SECONDARY}; font-size: 13px;")
-            vl.addWidget(lbl)
-            lw = QListWidget()
-            lw.setStyleSheet(f"""
-                QListWidget {{
-                    background: {t.BG_ELEVATED}; color: {t.TEXT_PRIMARY};
-                    border: 1px solid {t.BG_BORDER}; border-radius: {t.RADIUS_MD}px;
-                    font-size: 13px;
-                }}
-                QListWidget::item:selected {{ background: {t.ACCENT_MUTED}; color: {t.ACCENT}; }}
-            """)
-            for f in reversed(files):
-                lw.addItem(f)
-            lw.setCurrentRow(0)
-            vl.addWidget(lw)
-            btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-            btns.accepted.connect(dlg.accept)
-            btns.rejected.connect(dlg.reject)
-            vl.addWidget(btns)
-            lw.doubleClicked.connect(dlg.accept)
-            if dlg.exec() == QDialog.DialogCode.Accepted and lw.currentItem():
-                from app.core.config import get_final_dir
-                from app.core.downloader import open_path
-                open_path(os.path.join(get_final_dir(), lw.currentItem().text()))
-
-    def _action_watched(self) -> None:
-        from app.core.database import set_last_episode, clear_new_episode_flag
-        mark_ep = max(self._last_ready, self._episode or 0)
-
-        # Ask whether to delete local files
-        files_on_disk = self._find_video_files()
-        delete_files = False
-        if files_on_disk:
-            msg = QMessageBox(self)
-            msg.setWindowTitle("Marcar como Visto")
-            msg.setText(
-                f"Marcar <b>{self._title}</b> até o EP {mark_ep:02d} como visto?"
-            )
-            msg.setInformativeText(
-                f"{len(files_on_disk)} arquivo(s) encontrado(s) na pasta de episódios.\n"
-                "Deseja apagar os arquivos de vídeo e legendas do HD?"
-            )
-            msg.setIcon(QMessageBox.Icon.Question)
-            keep_btn   = msg.addButton("Manter arquivos", QMessageBox.ButtonRole.NoRole)
-            delete_btn = msg.addButton("Apagar do HD",    QMessageBox.ButtonRole.DestructiveRole)
-            cancel_btn = msg.addButton("Cancelar",        QMessageBox.ButtonRole.RejectRole)
-            msg.setDefaultButton(keep_btn)
-            msg.exec()
-            clicked = msg.clickedButton()
-            if clicked is cancel_btn:
-                return
-            delete_files = (clicked is delete_btn)
-
-        run_async(set_last_episode(self._anime_id, mark_ep))
-        run_async(clear_new_episode_flag(self._anime_id))
-
-        if delete_files:
-            self._delete_episode_files(files_on_disk)
-
-        self.close()
-
     def _delete_episode_files(self, video_files: list[str]) -> None:
         from app.core.config import get_final_dir
         final_dir = get_final_dir()
@@ -642,66 +661,118 @@ class DetailPanel(QDialog):
                 "Alguns arquivos não puderam ser apagados:\n" + "\n".join(errors),
             )
 
-    def _action_subtitle(self) -> None:
-        QMessageBox.information(self, "Buscar Legenda", "Busca de legenda online ainda não disponível nesta versão.")
+    def _update_tl_btn_state(self, ep_num: int, status: str) -> None:
+        if status == 'translating':
+            self._set_tl_loading(ep_num, True)
+        elif status == 'queued':
+            btn = self._tl_btns.get(ep_num)
+            if btn:
+                # Stop any running animation first
+                timer = self._tl_timers.pop(ep_num, None)
+                if timer:
+                    timer.stop()
+                    timer.deleteLater()
+                self._tl_step.pop(ep_num, None)
+                btn.setEnabled(False)
+                btn.setText("🕐 Na fila")
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {t.BG_ELEVATED};
+                        color: {t.TEXT_MUTED};
+                        border: 1px solid {t.BG_BORDER};
+                        border-radius: {t.RADIUS_SM}px;
+                        font-size: 11px;
+                    }}
+                """)
+        elif status in ('done', 'error'):
+            self._set_tl_loading(ep_num, False, success=(status == 'done'))
 
-    def _action_translate(self) -> None:
-        files = self._find_video_files()
-        if not files:
-            QMessageBox.information(self, "Traduzir", "Nenhum episódio encontrado na pasta de episódios.")
+    def _set_tl_loading(self, ep_num: int, loading: bool, success: bool = True) -> None:
+        btn = self._tl_btns.get(ep_num)
+        if btn is None:
             return
-            
-        if len(files) == 1:
-            self._start_translation(files[0])
-        else:
-            from PySide6.QtWidgets import QListWidget, QDialogButtonBox
-            dlg = QDialog(self)
-            dlg.setWindowTitle("Selecionar Episódio para Traduzir")
-            dlg.resize(460, 320)
-            dlg.setStyleSheet(f"background: {t.BG_SURFACE}; color: {t.TEXT_PRIMARY};")
-            vl = QVBoxLayout(dlg)
-            lbl = QLabel("Selecione o episódio para traduzir a legenda:")
-            lbl.setStyleSheet(f"color: {t.TEXT_SECONDARY}; font-size: 13px;")
-            vl.addWidget(lbl)
-            lw = QListWidget()
-            lw.setStyleSheet(f"""
-                QListWidget {{
-                    background: {t.BG_ELEVATED}; color: {t.TEXT_PRIMARY};
-                    border: 1px solid {t.BG_BORDER}; border-radius: {t.RADIUS_MD}px;
-                    font-size: 13px;
+        if loading:
+            self._tl_step[ep_num] = 0
+            btn.setEnabled(False)
+            btn.setText("⏳ Traduzindo")
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {t.BG_ELEVATED};
+                    color: {t.TRANSLATING};
+                    border: 1px solid {t.TRANSLATING};
+                    border-radius: {t.RADIUS_SM}px;
+                    font-size: 11px;
                 }}
-                QListWidget::item:selected {{ background: {t.ACCENT_MUTED}; color: {t.ACCENT}; }}
             """)
-            for f in reversed(files):
-                lw.addItem(f)
-            lw.setCurrentRow(0)
-            vl.addWidget(lw)
-            btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-            btns.accepted.connect(dlg.accept)
-            btns.rejected.connect(dlg.reject)
-            vl.addWidget(btns)
-            lw.doubleClicked.connect(dlg.accept)
-            if dlg.exec() == QDialog.DialogCode.Accepted and lw.currentItem():
-                self._start_translation(lw.currentItem().text())
+            timer = QTimer(self)
+            timer.setInterval(500)
+            def _tick(e=ep_num, b=btn):
+                if e not in self._tl_step:
+                    return
+                self._tl_step[e] = (self._tl_step[e] + 1) % 4
+                dots = "." * self._tl_step[e]
+                b.setText(f"⏳ Traduzindo{dots}" if dots else "⏳ Traduzindo")
+            timer.timeout.connect(_tick)
+            timer.start()
+            self._tl_timers[ep_num] = timer
+        else:
+            timer = self._tl_timers.pop(ep_num, None)
+            if timer:
+                timer.stop()
+                timer.deleteLater()
+            self._tl_step.pop(ep_num, None)
+            btn.setEnabled(True)
+            if success:
+                btn.setText("✓ Traduzido")
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {t.BG_ELEVATED};
+                        color: {t.SUCCESS};
+                        border: 1px solid {t.SUCCESS};
+                        border-radius: {t.RADIUS_SM}px;
+                        font-size: 11px;
+                    }}
+                    QPushButton:hover {{ color: {t.TEXT_PRIMARY}; border-color: {t.TRANSLATING}; }}
+                """)
+            else:
+                btn.setText("✗ Erro")
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {t.BG_ELEVATED};
+                        color: {t.ERROR};
+                        border: 1px solid {t.ERROR};
+                        border-radius: {t.RADIUS_SM}px;
+                        font-size: 11px;
+                    }}
+                    QPushButton:hover {{ color: {t.TEXT_PRIMARY}; border-color: {t.TRANSLATING}; }}
+                """)
 
     def _start_translation(self, filename: str, ep_num: int = None) -> None:
         from app.core.config import get_final_dir
         from app.ui.components.toast import ToastManager
-        from app.core.downloader import translate_video_subtitle
         video_path = os.path.join(get_final_dir(), filename)
+        anime_id = self._anime_id
 
-        ep_text = f" EP {ep_num:02d}" if ep_num is not None else ""
-        ToastManager.instance().show(f"Iniciando tradução{ep_text}...", "info")
+        if ep_num is None:
+            # Fallback: no ep tracking, just run directly
+            from app.core.downloader import translate_video_subtitle
+            ToastManager.instance().show("Iniciando tradução...", "info")
+            run_async(translate_video_subtitle(video_path))
+            return
 
-        def _on_done(result):
-            if isinstance(result, Exception):
-                ToastManager.instance().show(f"Erro na tradução: {result}", "error")
-            elif not result.get("ok"):
-                ToastManager.instance().show(f"Falha: {result.get('error')}", "error")
-            else:
-                ToastManager.instance().show(f"Legenda traduzida com sucesso!", "success")
+        key = (anime_id, ep_num)
+        if key in _active_translations:
+            return  # already running or queued
 
-        run_async(translate_video_subtitle(video_path), on_done=_on_done)
+        if _translation_running or _translation_queue:
+            _active_translations[key] = 'queued'
+            _translation_queue.append((anime_id, ep_num, video_path))
+            self._update_tl_btn_state(ep_num, 'queued')
+            ToastManager.instance().show(f"EP {ep_num:02d} adicionado à fila de tradução.", "info")
+        else:
+            _active_translations[key] = 'translating'
+            _translation_queue.append((anime_id, ep_num, video_path))
+            _process_translation_queue()
 
     def _action_folder(self) -> None:
         from app.core.config import get_final_dir

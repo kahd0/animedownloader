@@ -102,6 +102,8 @@ class LogEntryDelegate(QStyledItemDelegate):
     }
     SOURCE_COLORS = {
         "pipeline":    t.ACCENT,
+        "rss":         t.ACCENT,
+        "torrent":     t.DOWNLOADING,
         "download":    t.DOWNLOADING,
         "subtitle":    t.SUCCESS,
         "translation": t.TRANSLATING,
@@ -272,11 +274,21 @@ class LogsScreen(QWidget):
         root.addWidget(self._view, 1)
 
         self._state_connected = False
+        self._history_loaded = False
+
+        # Retry connecting to qt_app_state (may not be ready at construction)
+        self._connect_timer = QTimer(self)
+        self._connect_timer.setInterval(250)
+        self._connect_timer.timeout.connect(self._connect_state)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if not self._state_connected:
             self._connect_state()
+            if not self._state_connected:
+                self._connect_timer.start()
+        if not self._history_loaded:
+            self._load_history()
 
     def _connect_state(self) -> None:
         try:
@@ -284,8 +296,31 @@ class LogsScreen(QWidget):
             if qt_app_state is not None:
                 qt_app_state.log_message.connect(self._on_log)
                 self._state_connected = True
+                self._connect_timer.stop()
         except Exception:
             pass
+
+    def _load_history(self) -> None:
+        from app.utils.async_bridge import run_async
+
+        def _done(rows):
+            if isinstance(rows, Exception):
+                return
+            for row in rows:
+                # row: (id, level, source, message, created_at)
+                _, level, source, message, created_at = row
+                ts = (created_at or "")[:8] if created_at else ""
+                entry = _LogEntry(ts, level or "INFO", source or "pipeline", message or "")
+                self._model.append(entry)
+            if self._auto_scroll:
+                self._view.scrollToBottom()
+            self._history_loaded = True
+
+        async def _fetch():
+            from app.core.database import get_logs
+            return await get_logs(limit=2000)
+
+        run_async(_fetch(), on_done=_done)
 
     # ── Level filter ─────────────────────────────────────────────────────────
 
@@ -333,17 +368,10 @@ class LogsScreen(QWidget):
         if value < sb.maximum() - 50:
             self._auto_scroll = False
 
-    def _on_log(self, message: str, color: str) -> None:
+    def _on_log(self, message: str, level: str, source: str = "pipeline") -> None:
         import datetime
         ts = datetime.datetime.now().strftime("%H:%M:%S")
-        # Map color → level
-        level_map = {
-            "red": "ERROR", "yellow": "WARNING", "green": "SUCCESS",
-            "cyan": "INFO", "blue": "INFO", "white": "INFO",
-        }
-        level = level_map.get(color, "INFO")
-        source = "pipeline"
-        entry = _LogEntry(ts, level, source, message)
+        entry = _LogEntry(ts, level.upper(), source, message)
         self._model.append(entry)
         if self._auto_scroll:
             self._view.scrollToBottom()
@@ -353,3 +381,10 @@ class LogsScreen(QWidget):
         self._model._entries.clear()
         self._model._visible.clear()
         self._model.endResetModel()
+        from app.utils.async_bridge import run_async
+
+        async def _do_clear():
+            from app.core.database import clear_logs
+            await clear_logs()
+
+        run_async(_do_clear())
