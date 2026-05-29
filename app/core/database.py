@@ -243,8 +243,13 @@ async def set_last_episode(anime_id, episode_num):
     """Atualiza o episódio incondicionalmente (para correções manuais)."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "UPDATE monitored SET last_episode = ? WHERE id = ?",
-            (episode_num, anime_id)
+            """UPDATE monitored
+               SET last_episode = ?,
+                   last_downloaded = MAX(last_downloaded, ?),
+                   last_ready = MAX(last_ready, ?),
+                   has_new_episode = 0
+               WHERE id = ?""",
+            (episode_num, episode_num, episode_num, anime_id)
         )
         await db.commit()
 
