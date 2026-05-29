@@ -12,9 +12,9 @@ jobs:
   build-linux:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -29,7 +29,7 @@ jobs:
             --collect-all PIL \
             main.py
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: linux-build
           path: dist/anime-monitor-linux
@@ -40,9 +40,9 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -57,7 +57,7 @@ jobs:
             --collect-all PIL \
             main.py
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: windows-build
           path: dist/anime-monitor-windows.exe
@@ -66,12 +66,12 @@ jobs:
     needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: linux-build
           path: release-files/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: windows-build
           path: release-files/
