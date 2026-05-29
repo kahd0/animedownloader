@@ -8,12 +8,11 @@ from PySide6.QtCore import (
     Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
     QTimer, Signal,
 )
-from PySide6.QtGui import QColor, QPixmap, QPainter, QFont
+from PySide6.QtGui import QColor, QPainter, QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableView, QHeaderView,
     QLabel, QPushButton, QLineEdit, QMenu, QStyledItemDelegate,
-    QStyleOptionViewItem, QFrame, QSizePolicy, QAbstractItemView,
-    QSplitter, QScrollArea,
+    QStyleOptionViewItem, QFrame, QAbstractItemView,
 )
 
 from app.ui.design import tokens as t
@@ -288,120 +287,6 @@ def _draw_badge(painter: QPainter, cx: int, cy: int, color: str) -> None:
     painter.drawEllipse(cx - 5, cy, 10, 10)
 
 
-class _DetailPanel(QWidget):
-    """Right-side detail panel shown when a row is selected."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedWidth(280)
-        self.setStyleSheet(f"background: {t.BG_ELEVATED};")
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(16, 20, 16, 20)
-        root.setSpacing(12)
-
-        self._cover = QLabel()
-        self._cover.setFixedSize(180, 252)
-        self._cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._cover.setStyleSheet(f"background: {t.BG_DEEP}; border-radius: 6px;")
-        root.addWidget(self._cover, 0, Qt.AlignmentFlag.AlignHCenter)
-
-        self._title = QLabel()
-        self._title.setWordWrap(True)
-        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._title.setStyleSheet(f"color: {t.TEXT_PRIMARY}; font-size: 14px; font-weight: 700; background: transparent;")
-        root.addWidget(self._title)
-
-        # Info grid
-        self._info_widget = QWidget()
-        self._info_widget.setStyleSheet("background: transparent;")
-        self._info_layout = QVBoxLayout(self._info_widget)
-        self._info_layout.setContentsMargins(0, 0, 0, 0)
-        self._info_layout.setSpacing(6)
-        root.addWidget(self._info_widget)
-
-        # Synopsis
-        syn_label = QLabel("Sinopse")
-        syn_label.setStyleSheet(f"color: {t.TEXT_MUTED}; font-size: 11px; font-weight: 600; background: transparent;")
-        root.addWidget(syn_label)
-
-        self._synopsis = QLabel()
-        self._synopsis.setWordWrap(True)
-        self._synopsis.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self._synopsis.setStyleSheet(f"color: {t.TEXT_SECONDARY}; font-size: 12px; background: transparent;")
-        self._synopsis.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self._synopsis)
-        scroll.setStyleSheet("border: none; background: transparent;")
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        root.addWidget(scroll, 1)
-
-        self.clear()
-
-    def clear(self) -> None:
-        self._cover.setText("Sem capa")
-        self._cover.setPixmap(QPixmap())
-        self._title.setText("Selecione um anime")
-        self._synopsis.setText("")
-        while self._info_layout.count():
-            item = self._info_layout.takeAt(0)
-            if item and item.widget():
-                item.widget().deleteLater()
-
-    def load(self, row: tuple) -> None:
-        self.clear()
-
-        title = row[_TITLE] or row[_PATTERN]
-        self._title.setText(title)
-
-        # Cover
-        cover_path = _find_cover(row[_PATTERN])
-        if cover_path:
-            px = get_cover_pixmap_sync(cover_path, 180, 252)
-            if px and not px.isNull():
-                self._cover.setPixmap(px)
-                self._cover.setText("")
-
-        # Info rows
-        ep    = row[_LAST_EP] or 0
-        total = row[_TOTAL_EPS]
-        prog  = f"EP {ep:02d} / {total:02d}" if total else (f"EP {ep:02d}" if ep else "—")
-
-        fields = [
-            ("Progresso",  prog),
-            ("Status",     _status_label(row[_STATUS])),
-            ("Score",      f"★ {row[_SCORE]:.1f}" if row[_SCORE] else "—"),
-            ("Estúdio",    row[_STUDIO] or "—"),
-            ("Temporada",  f"{row[_SEASON]} {row[_YEAR]}" if row[_SEASON] else (str(row[_YEAR]) if row[_YEAR] else "—")),
-            ("Resolução",  row[_RES] or "—"),
-            ("Atualizado", row[_DL_DATE] or "—"),
-        ]
-
-        for label, value in fields:
-            row_w = QWidget()
-            row_w.setStyleSheet("background: transparent;")
-            rl = QHBoxLayout(row_w)
-            rl.setContentsMargins(0, 0, 0, 0)
-            rl.setSpacing(4)
-            lbl = QLabel(label)
-            lbl.setStyleSheet(f"color: {t.TEXT_MUTED}; font-size: 11px; background: transparent;")
-            lbl.setFixedWidth(80)
-            val = QLabel(value)
-            val.setStyleSheet(f"color: {t.TEXT_PRIMARY}; font-size: 12px; font-weight: 600; background: transparent;")
-            val.setWordWrap(True)
-            rl.addWidget(lbl)
-            rl.addWidget(val, 1)
-            self._info_layout.addWidget(row_w)
-
-        # Synopsis
-        synopsis = row[_SYNOPSIS] or ""
-        if len(synopsis) > 400:
-            synopsis = synopsis[:400] + "…"
-        self._synopsis.setText(synopsis or "Sem sinopse disponível.")
-
-
 class LibraryScreen(QWidget):
     check_requested = Signal()
 
@@ -485,12 +370,7 @@ class LibraryScreen(QWidget):
         sep.setStyleSheet(f"background: {t.BG_BORDER}; border: none;")
         root.addWidget(sep)
 
-        # ── Body: table + detail panel ────────────────────────────────────────
-        self._splitter = QSplitter(Qt.Orientation.Horizontal)
-        self._splitter.setHandleWidth(1)
-        self._splitter.setStyleSheet("QSplitter::handle { background: " + t.BG_BORDER + "; }")
-
-        # Table
+        # ── Body: full-width table ─────────────────────────────────────────────
         self._model = _AnimeTableModel(self)
         self._proxy = QSortFilterProxyModel(self)
         self._proxy.setSourceModel(self._model)
@@ -509,7 +389,7 @@ class LibraryScreen(QWidget):
         self._table.verticalHeader().setDefaultSectionSize(_LibraryDelegate.ROW_HEIGHT)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._show_context_menu)
-        self._table.selectionModel().currentRowChanged.connect(self._on_row_changed)
+        self._table.doubleClicked.connect(self._on_row_double_clicked)
 
         hdr = self._table.horizontalHeader()
         hdr.setSectionResizeMode(_AnimeTableModel.COL_THUMB,  QHeaderView.ResizeMode.Fixed)
@@ -526,15 +406,7 @@ class LibraryScreen(QWidget):
         self._table.setColumnWidth(_AnimeTableModel.COL_STUDIO, 150)
         self._table.setColumnWidth(_AnimeTableModel.COL_DATE,   120)
 
-        self._splitter.addWidget(self._table)
-
-        # Detail panel
-        self._detail = _DetailPanel()
-        self._splitter.addWidget(self._detail)
-        self._splitter.setStretchFactor(0, 1)
-        self._splitter.setStretchFactor(1, 0)
-
-        root.addWidget(self._splitter, 1)
+        root.addWidget(self._table, 1)
 
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -564,14 +436,15 @@ class LibraryScreen(QWidget):
     def _on_search(self) -> None:
         self._debounce.start(300)
 
-    def _on_row_changed(self, current: QModelIndex, _prev: QModelIndex) -> None:
-        if not current.isValid():
-            self._detail.clear()
+    def _on_row_double_clicked(self, index: QModelIndex) -> None:
+        if not index.isValid():
             return
-        src = self._proxy.mapToSource(current)
+        src = self._proxy.mapToSource(index)
         row = self._model.get_row(src.row())
         if row:
-            self._detail.load(row)
+            from app.ui.components.detail_panel import DetailPanel
+            DetailPanel(row, self.window()).exec()
+            self.refresh()
 
     # ── Check now ────────────────────────────────────────────────────────────
 

@@ -10,6 +10,7 @@ from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QDialog, QMessageBox, QInputDialog, QScrollArea,
+    QTabWidget, QSizePolicy,
 )
 
 from app.ui.design import tokens as t
@@ -78,10 +79,18 @@ class DetailPanel(QDialog):
         self._episode   = last_ep
         self._res       = res
         self._airing    = airing
+        self._last_date = last_date
         self._drag_pos: QPoint | None = None
         self._last_ep   = last_ep or 0
         self._last_dl   = last_dl or 0
         self._last_ready = last_ready
+        # Rich metadata (indexes 10-15 of get_monitored_animes), defensively read
+        self._total_eps = rest[0] if len(rest) > 0 else None
+        self._score     = rest[1] if len(rest) > 1 else None
+        self._studio    = rest[2] if len(rest) > 2 else None
+        self._season    = rest[3] if len(rest) > 3 else None
+        self._year      = rest[4] if len(rest) > 4 else None
+        self._synopsis  = rest[5] if len(rest) > 5 else None
         self._all_eps = self._all_eps_on_disk()  # list of (ep_num, filename)
         self._tl_btns: dict[int, QPushButton] = {}
         self._tl_timers: dict[int, QTimer] = {}
@@ -91,7 +100,7 @@ class DetailPanel(QDialog):
         self.setWindowTitle(self._title)
         self.setModal(True)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.resize(860, 560)
+        self.resize(900, 620)
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setStyleSheet(f"background: {t.BG_DEEP};")
 
@@ -140,19 +149,34 @@ class DetailPanel(QDialog):
 
         # Left: poster
         self._poster_lbl = QLabel()
-        self._poster_lbl.setFixedWidth(240)
+        self._poster_lbl.setFixedWidth(260)
         self._poster_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._poster_lbl.setStyleSheet(f"background: {t.BG_SURFACE};")
         layout.addWidget(self._poster_lbl)
 
-        # Right: info + actions
+        # Right: header (fixed) + tabs (stretch) + footer (fixed)
         right = QWidget()
         right.setStyleSheet("background: transparent;")
         rl = QVBoxLayout(right)
-        rl.setContentsMargins(t.SP8, t.SP5, t.SP8, t.SP8)
-        rl.setSpacing(t.SP4)
+        rl.setContentsMargins(t.SP8, t.SP5, t.SP8, t.SP6)
+        rl.setSpacing(t.SP3)
 
-        # Close button — white circle, turns red on hover
+        rl.addWidget(self._build_header())
+        rl.addWidget(self._build_tabs(), 1)
+        rl.addWidget(self._build_footer())
+
+        layout.addWidget(right, 1)
+
+    # ── Header ─────────────────────────────────────────────────────────────────
+
+    def _build_header(self) -> QWidget:
+        header = QWidget()
+        header.setStyleSheet("background: transparent;")
+        hl = QVBoxLayout(header)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(t.SP2)
+
+        # Close button — turns red on hover
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(36, 36)
         close_btn.setStyleSheet(f"""
@@ -171,13 +195,11 @@ class DetailPanel(QDialog):
             }}
         """)
         close_btn.clicked.connect(self.close)
-        close_row = QWidget()
-        close_row.setStyleSheet("background: transparent;")
-        cr = QHBoxLayout(close_row)
-        cr.setContentsMargins(0, 0, 0, 0)
-        cr.addStretch(1)
-        cr.addWidget(close_btn)
-        rl.addWidget(close_row)
+        close_row = QHBoxLayout()
+        close_row.setContentsMargins(0, 0, 0, 0)
+        close_row.addStretch(1)
+        close_row.addWidget(close_btn)
+        hl.addLayout(close_row)
 
         # Title
         title_lbl = QLabel(self._title)
@@ -185,49 +207,149 @@ class DetailPanel(QDialog):
             f"color: {t.TEXT_PRIMARY}; font-size: 24px; font-weight: 700; background: transparent;"
         )
         title_lbl.setWordWrap(True)
-        rl.addWidget(title_lbl)
+        hl.addWidget(title_lbl)
 
-        # Meta
-        airing_lower = (self._airing or "").lower()
-        if "finished" in airing_lower or "complete" in airing_lower:
-            status_text = "Finalizado"
-        elif "currently" in airing_lower or airing_lower == "airing":
-            status_text = "Em Exibição"
-        elif "not yet" in airing_lower:
-            status_text = "Em Breve"
-        else:
-            status_text = self._airing or "Desconhecido"
+        # Summary line: ★ score · studio · season year
+        summary = self._summary_line()
+        if summary:
+            sub = QLabel(summary)
+            sub.setStyleSheet(f"color: {t.TEXT_SECONDARY}; font-size: 13px; background: transparent;")
+            sub.setWordWrap(True)
+            hl.addWidget(sub)
 
-        current_ep = self._last_dl or self._episode
-        if self._last_dl > self._last_ep and self._last_ep:
-            ep_str = f"EP {self._last_ep:02d} → {self._last_dl:02d}"
-        elif current_ep:
-            ep_str = f"EP {current_ep:02d}"
-        else:
-            ep_str = "EP —"
-        meta = QLabel(f"{ep_str}  ·  {status_text}  ·  {self._res or '?'}")
-        meta.setStyleSheet(f"color: {t.TEXT_SECONDARY}; font-size: 13px; background: transparent;")
-        rl.addWidget(meta)
+        # Chips: status + progress
+        chips = QHBoxLayout()
+        chips.setContentsMargins(0, t.SP1, 0, 0)
+        chips.setSpacing(t.SP2)
+        status_text, status_color = self._status_display()
+        chips.addWidget(self._make_chip(status_text, status_color))
+        chips.addWidget(self._make_chip(self._progress_text(), t.TEXT_SECONDARY))
+        chips.addStretch(1)
+        hl.addLayout(chips)
 
-        # Episodes section
-        sep_eps = QFrame()
-        sep_eps.setFrameShape(QFrame.Shape.HLine)
-        sep_eps.setFixedHeight(1)
-        sep_eps.setStyleSheet(f"background: {t.BG_BORDER}; border: none;")
-        rl.addWidget(sep_eps)
+        return header
 
-        eps_label = QLabel("EPISÓDIOS")
-        eps_label.setStyleSheet(
+    # ── Tabs ───────────────────────────────────────────────────────────────────
+
+    def _build_tabs(self) -> QTabWidget:
+        tabs = QTabWidget()
+        tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ border: none; background: transparent; }}
+            QTabBar::tab {{
+                background: transparent;
+                color: {t.TEXT_SECONDARY};
+                padding: 6px 14px;
+                border: none;
+                border-bottom: 2px solid transparent;
+                font-size: 13px;
+            }}
+            QTabBar::tab:selected {{
+                color: {t.TEXT_PRIMARY};
+                border-bottom-color: {t.ACCENT};
+            }}
+            QTabBar::tab:hover {{ color: {t.TEXT_PRIMARY}; }}
+        """)
+        tabs.addTab(self._build_overview_tab(), "Visão Geral")
+        tabs.addTab(self._build_episodes_tab(), "Episódios")
+        return tabs
+
+    def _build_overview_tab(self) -> QWidget:
+        page = QWidget()
+        page.setStyleSheet("background: transparent;")
+        pl = QVBoxLayout(page)
+        pl.setContentsMargins(0, t.SP3, 0, 0)
+        pl.setSpacing(t.SP3)
+
+        # Synopsis
+        syn_label = QLabel("SINOPSE")
+        syn_label.setStyleSheet(
             f"color: {t.TEXT_MUTED}; font-size: 11px; font-weight: 600;"
             f" letter-spacing: 1px; background: transparent;"
         )
-        rl.addWidget(eps_label)
+        pl.addWidget(syn_label)
+
+        synopsis = (self._synopsis or "").strip() or "Sem sinopse disponível."
+        syn_text = QLabel(synopsis)
+        syn_text.setWordWrap(True)
+        syn_text.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        syn_text.setStyleSheet(
+            f"color: {t.TEXT_SECONDARY}; font-size: 13px; background: transparent; border: none;"
+        )
+        syn_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        syn_scroll = QScrollArea()
+        syn_scroll.setWidgetResizable(True)
+        syn_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        syn_scroll.setWidget(syn_text)
+        syn_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        syn_scroll.setStyleSheet("background: transparent; border: none;")
+        pl.addWidget(syn_scroll, 1)
+
+        # Data sheet
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background: {t.BG_BORDER}; border: none;")
+        pl.addWidget(sep)
+
+        pl.addWidget(self._build_data_sheet())
+
+        return page
+
+    def _build_data_sheet(self) -> QWidget:
+        widget = QWidget()
+        widget.setStyleSheet("background: transparent;")
+        grid = QVBoxLayout(widget)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(6)
+
+        ep = self._last_ep
+        if self._total_eps:
+            prog = f"EP {ep:02d} / {int(self._total_eps):02d}"
+        else:
+            prog = f"EP {ep:02d}" if ep else "—"
+        status_text, _ = self._status_display()
+
+        fields = [
+            ("Progresso",  prog),
+            ("Status",     status_text),
+            ("Score",      self._score_text()),
+            ("Estúdio",    self._studio or "—"),
+            ("Temporada",  self._season_year_text()),
+            ("Resolução",  self._res or "—"),
+            ("Atualizado", self._last_date or "—"),
+        ]
+
+        for label, value in fields:
+            row_w = QWidget()
+            row_w.setStyleSheet("background: transparent;")
+            rl = QHBoxLayout(row_w)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(8)
+            lbl = QLabel(label)
+            lbl.setStyleSheet(f"color: {t.TEXT_MUTED}; font-size: 12px; background: transparent;")
+            lbl.setFixedWidth(90)
+            val = QLabel(str(value))
+            val.setStyleSheet(
+                f"color: {t.TEXT_PRIMARY}; font-size: 12px; font-weight: 600; background: transparent;"
+            )
+            val.setWordWrap(True)
+            rl.addWidget(lbl)
+            rl.addWidget(val, 1)
+            grid.addWidget(row_w)
+
+        return widget
+
+    def _build_episodes_tab(self) -> QWidget:
+        page = QWidget()
+        page.setStyleSheet("background: transparent;")
+        pl = QVBoxLayout(page)
+        pl.setContentsMargins(0, t.SP3, 0, 0)
+        pl.setSpacing(t.SP2)
 
         ep_scroll = QScrollArea()
         ep_scroll.setWidgetResizable(True)
         ep_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_h = max(min(len(self._all_eps) * 48 + 8, 240), 120)
-        ep_scroll.setFixedHeight(scroll_h)
         ep_scroll.setStyleSheet(f"""
             QScrollArea {{ background: transparent; border: none; }}
             QScrollBar:vertical {{
@@ -240,36 +362,42 @@ class DetailPanel(QDialog):
         ep_container = QWidget()
         ep_container.setStyleSheet("background: transparent;")
         ep_vl = QVBoxLayout(ep_container)
-        ep_vl.setContentsMargins(0, 4, 0, 4)
+        ep_vl.setContentsMargins(0, 4, 4, 4)
         ep_vl.setSpacing(4)
 
         if self._all_eps:
             for ep_num, filename in self._all_eps:  # already sorted newest-first
-                row = self._make_episode_row(ep_num, filename)
-                ep_vl.addWidget(row)
+                ep_vl.addWidget(self._make_episode_row(ep_num, filename))
         else:
             empty_lbl = QLabel("Nenhum episódio na pasta")
             empty_lbl.setStyleSheet(
                 f"color: {t.TEXT_MUTED}; font-size: 12px; background: transparent; border: none;"
             )
             ep_vl.addWidget(empty_lbl)
+        ep_vl.addStretch(1)
 
         ep_scroll.setWidget(ep_container)
-        rl.addWidget(ep_scroll)
+        pl.addWidget(ep_scroll, 1)
+        return page
 
-        # Utility actions
-        sep2 = QFrame()
-        sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setFixedHeight(1)
-        sep2.setStyleSheet(f"background: {t.BG_BORDER}; border: none;")
-        rl.addWidget(sep2)
+    # ── Footer ─────────────────────────────────────────────────────────────────
 
-        util_row = QWidget()
-        util_row.setStyleSheet("background: transparent;")
-        url = QHBoxLayout(util_row)
-        url.setContentsMargins(0, 0, 0, 0)
-        url.setSpacing(t.SP2)
+    def _build_footer(self) -> QWidget:
+        footer = QWidget()
+        footer.setStyleSheet("background: transparent;")
+        fl = QVBoxLayout(footer)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(t.SP2)
 
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background: {t.BG_BORDER}; border: none;")
+        fl.addWidget(sep)
+
+        util_row = QHBoxLayout()
+        util_row.setContentsMargins(0, 0, 0, 0)
+        util_row.setSpacing(t.SP2)
         for label, action in [
             ("📁  Pasta", self._action_folder),
             ("✏  Editar EP", self._action_edit),
@@ -278,13 +406,70 @@ class DetailPanel(QDialog):
             btn = QPushButton(label)
             btn.setFixedHeight(32)
             btn.clicked.connect(action)
-            url.addWidget(btn)
+            util_row.addWidget(btn)
+        util_row.addStretch(1)
+        fl.addLayout(util_row)
+        return footer
 
-        url.addStretch(1)
-        rl.addWidget(util_row)
-        rl.addStretch(1)
+    # ── Metadata formatting helpers ──────────────────────────────────────────────
 
-        layout.addWidget(right, 1)
+    def _make_chip(self, text: str, color: str) -> QLabel:
+        chip = QLabel(text)
+        chip.setStyleSheet(f"""
+            QLabel {{
+                background: {t.BG_ELEVATED};
+                color: {color};
+                border: 1px solid {color};
+                border-radius: {t.RADIUS_SM}px;
+                padding: 3px 10px;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+        """)
+        return chip
+
+    def _status_display(self) -> tuple[str, str]:
+        airing_lower = (self._airing or "").lower()
+        if "finished" in airing_lower or "complete" in airing_lower:
+            return "Finalizado", t.TEXT_MUTED
+        if "currently" in airing_lower or airing_lower == "airing":
+            return "Em Exibição", t.SUCCESS
+        if "not yet" in airing_lower:
+            return "Em Breve", t.INFO
+        return (self._airing or "Desconhecido"), t.TEXT_SECONDARY
+
+    def _score_text(self) -> str:
+        try:
+            return f"★ {float(self._score):.1f}" if self._score else "—"
+        except (TypeError, ValueError):
+            return "—"
+
+    def _season_year_text(self) -> str:
+        if self._season and self._year:
+            return f"{self._season} {self._year}"
+        if self._season:
+            return str(self._season)
+        if self._year:
+            return str(self._year)
+        return "—"
+
+    def _progress_text(self) -> str:
+        ep = self._last_ep
+        if self._total_eps:
+            return f"EP {ep:02d} / {int(self._total_eps):02d}"
+        return f"EP {ep:02d}" if ep else "EP —"
+
+    def _summary_line(self) -> str:
+        parts = []
+        score = self._score_text()
+        if score != "—":
+            parts.append(score)
+        if self._studio:
+            parts.append(str(self._studio))
+        season_year = self._season_year_text()
+        if season_year != "—":
+            parts.append(season_year)
+        return "  ·  ".join(parts)
 
     def _load_cover(self) -> None:
         from app.core.config import COVERS_DIR as COVER_DIR
@@ -293,10 +478,10 @@ class DetailPanel(QDialog):
             path = os.path.join(COVER_DIR, safe + ext)
             if os.path.exists(path):
                 from app.ui.utils.image_cache import get_cover_pixmap
-                px = get_cover_pixmap(path, 240, self.height())
+                px = get_cover_pixmap(path, 260, self.height())
                 if px and not px.isNull():
                     self._poster_lbl.setPixmap(px.scaled(
-                        240, self.height(),
+                        260, self.height(),
                         Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                         Qt.TransformationMode.SmoothTransformation,
                     ))
