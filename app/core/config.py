@@ -3,7 +3,7 @@ import sys
 import json
 
 # Versão do Aplicativo
-VERSION = "v1.0.7"
+VERSION = "v1.0.8"
 GITHUB_REPO = "kahd0/animedownloader"
 
 # APIs

@@ -25,6 +25,7 @@ CATEGORIES = [
     ("translation",  "Tradução"),
     ("organization", "Organização"),
     ("appearance",   "Aparência"),
+    ("about",        "Sobre"),
 ]
 
 
@@ -462,6 +463,25 @@ class SettingsScreen(QWidget):
         self._rss_section = _RSSSection(feeds)
         self._sections["rss"] = [self._rss_section]
 
+        # About / Atualizações
+        from app.core.config import VERSION
+        s_about = _SectionCard("SOBRE E ATUALIZAÇÕES")
+        ver_lbl = QLabel(VERSION)
+        ver_lbl.setStyleSheet(f"color: {t.TEXT_SECONDARY}; font-size: 13px; background: transparent;")
+        s_about.add_row(_SettingsRow("Versão Atual", ver_lbl, "Versão instalada do aplicativo"))
+
+        self._update_btn = QPushButton("Buscar Atualizações")
+        self._update_btn.setProperty("class", "primary")
+        self._update_btn.setFixedHeight(36)
+        self._update_btn.clicked.connect(self._check_updates_manual)
+        upd_row = QWidget()
+        upd_rl = QHBoxLayout(upd_row)
+        upd_rl.setContentsMargins(0, 0, 0, 0)
+        upd_rl.addStretch(1)
+        upd_rl.addWidget(self._update_btn)
+        s_about.add_row(upd_row)
+        self._sections["about"] = [s_about]
+
         # Placeholder sections
         for key in ["organization", "appearance"]:
             placeholder = _SectionCard(key.upper())
@@ -507,6 +527,19 @@ class SettingsScreen(QWidget):
                 ToastManager.instance().show("qBittorrent conectado!", "success")
 
         run_async(_do_test(), on_done=_on_result)
+
+    def _check_updates_manual(self) -> None:
+        from app.ui.update_flow import check_for_updates
+
+        def on_state(state: str) -> None:
+            if state == "checking":
+                self._update_btn.setEnabled(False)
+                self._update_btn.setText("Verificando...")
+            else:
+                self._update_btn.setEnabled(True)
+                self._update_btn.setText("Buscar Atualizações")
+
+        check_for_updates(self, silent=False, on_state=on_state)
 
     def _save(self) -> None:
         if not self._config:

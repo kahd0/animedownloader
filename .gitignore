@@ -183,3 +183,6 @@ run_downloader.sh
 
 # Claude Code instructions (internal dev tool)
 CLAUDE.md
+
+# SubtitleEdit bundled tool (downloaded binaries, too large for git)
+tools/subtitleedit/

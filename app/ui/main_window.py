@@ -69,6 +69,9 @@ class AnimeMonitorApp(QMainWindow):
         self._check_timer.timeout.connect(self._run_episode_check)
         QTimer.singleShot(60_000, self._start_check_timer)
 
+        # Verificação de atualização do app no startup (silenciosa se já atualizado)
+        QTimer.singleShot(3_000, self._check_app_updates)
+
     def _build_screens(self) -> None:
         from app.ui.screens.dashboard  import DashboardScreen
         from app.ui.screens.library    import LibraryScreen
@@ -184,6 +187,13 @@ class AnimeMonitorApp(QMainWindow):
             # Dashboard cards already refreshed via episode_ready signal
 
         run_async(_check(), on_done=_done)
+
+    def _check_app_updates(self) -> None:
+        try:
+            from app.ui.update_flow import check_for_updates
+            check_for_updates(self, silent=True)
+        except Exception as e:
+            print(f"Update check error: {e}")
 
     def _on_anime_added(self, title: str) -> None:
         self._navigate("dashboard")
