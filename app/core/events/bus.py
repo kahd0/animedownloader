@@ -77,6 +77,13 @@ class PipelineFailed(BaseEvent):
     error: str
 
 
+@dataclass
+class Notify(BaseEvent):
+    """User-facing notification surfaced as a toast by the UI layer."""
+    level: str   # "info" | "success" | "warning" | "error"
+    message: str
+
+
 Handler = Callable[[BaseEvent], Coroutine[Any, Any, None]]
 
 

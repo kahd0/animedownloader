@@ -129,6 +129,10 @@ class AnimeMonitorApp(QMainWindow):
                     f"Erro em {step} EP{ep:02d}", "error"
                 )
             )
+            # Notificações do pipeline (ex.: torrent enviado ao app padrão, sem cliente)
+            self._qt_state.notify.connect(
+                lambda level, message: ToastManager.instance().show(message, level)
+            )
         except Exception as e:
             print(f"State init error: {e}")
 
@@ -161,6 +165,14 @@ class AnimeMonitorApp(QMainWindow):
             pipeline.setup(qbittorrent_provider=provider, watcher=watcher)
             job_queue.start()
             watcher.start()
+
+            # Vigia a pasta de Downloads para continuar o pipeline quando o vídeo
+            # chega via app de torrent externo (modos "auto"/"external").
+            from app.watchers.filesystem_watcher import FilesystemWatcher
+            from app.core.config import get_source_dir
+            self._fs_watcher = FilesystemWatcher(get_source_dir())
+            self._fs_watcher.start()
+            self._fs_watcher.start_emitting()
         except Exception as e:
             print(f"Pipeline/Queue/Watcher start error: {e}")
 
@@ -180,6 +192,12 @@ class AnimeMonitorApp(QMainWindow):
             if isinstance(result, Exception):
                 return
             triggered = result or []
+            # Avisa o usuário quando a verificação automática encontra episódios novos
+            # (o pipeline emite Notify separado dizendo para onde cada um foi).
+            if triggered:
+                ToastManager.instance().show(
+                    f"{len(triggered)} novo(s) episódio(s) encontrado(s)", "success"
+                )
             # Refresh library if visible
             lib = self._screens.get("library")
             if lib:

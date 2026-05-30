@@ -17,6 +17,7 @@ class QtAppState(QObject):
     episode_ready       = Signal(int, int, str)        # anime_id, episode, title
     pipeline_failed     = Signal(int, int, str, str)   # anime_id, episode, step, error
     log_message         = Signal(str, str, str)         # message, level, source
+    notify              = Signal(str, str)              # level, message
 
     def __init__(self):
         super().__init__()
@@ -27,7 +28,7 @@ class QtAppState(QObject):
         from app.core.events.bus import (
             EpisodeDetected, TorrentAdded, TorrentCompleted,
             SubtitleFound, SubtitleTranslated, MediaOrganized,
-            EpisodeReady, PipelineFailed,
+            EpisodeReady, PipelineFailed, Notify,
         )
 
         bus.subscribe(EpisodeDetected,    self._on_episode_detected)
@@ -38,6 +39,7 @@ class QtAppState(QObject):
         bus.subscribe(MediaOrganized,     self._on_media_organized)
         bus.subscribe(EpisodeReady,       self._on_episode_ready)
         bus.subscribe(PipelineFailed,     self._on_pipeline_failed)
+        bus.subscribe(Notify,             self._on_notify)
 
         # Also hook into AppState log callbacks
         from app.ui.state.app_state import app_state
@@ -90,6 +92,12 @@ class QtAppState(QObject):
     async def _on_pipeline_failed(self, event) -> None:
         _get_bridge()._callback_ready.emit(
             lambda _: self.pipeline_failed.emit(event.anime_id, event.episode, event.step, event.error),
+            None,
+        )
+
+    async def _on_notify(self, event) -> None:
+        _get_bridge()._callback_ready.emit(
+            lambda _: self.notify.emit(event.level, event.message),
             None,
         )
 

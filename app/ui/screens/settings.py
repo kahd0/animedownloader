@@ -19,7 +19,7 @@ from app.providers.torrents.qbittorrent import QBittorrentProvider
 CATEGORIES = [
     ("general",      "Geral"),
     ("downloads",    "Downloads"),
-    ("qbittorrent",  "qBittorrent"),
+    ("qbittorrent",  "Torrent"),
     ("rss",          "RSS"),
     ("subtitles",    "Legendas"),
     ("translation",  "Tradução"),
@@ -353,6 +353,7 @@ class SettingsScreen(QWidget):
                 check_interval= int(cfg_mod.get_setting("check_interval", "10"))
                 auto_organize = cfg_mod.is_auto_organize_enabled()
                 download_ahead= cfg_mod.get_download_ahead()
+                torrent_mode  = cfg_mod.get_torrent_mode()
                 qbt_host      = cfg_mod.get_setting("qbt_host", "localhost")
                 qbt_port      = cfg_mod.get_setting("qbt_port", "8080")
                 qbt_user      = cfg_mod.get_setting("qbt_user", "")
@@ -396,7 +397,27 @@ class SettingsScreen(QWidget):
 
         self._sections["general"] = [s1, s2]
 
-        # qBittorrent
+        # Torrent — modo de cliente
+        s_mode = _SectionCard("CLIENTE DE TORRENT")
+        mode_combo = QComboBox()
+        for value, label in [
+            ("auto",        "Automático (qBittorrent, senão app padrão)"),
+            ("qbittorrent", "qBittorrent"),
+            ("external",    "App de torrent padrão do sistema"),
+        ]:
+            mode_combo.addItem(label, value)
+        idx = mode_combo.findData(getattr(cfg, "torrent_mode", "auto"))
+        mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        mode_combo.setProperty("save_as_data", True)
+        mode_combo.setFixedWidth(300)
+        mode_combo.setFixedHeight(34)
+        self._controls["torrent_mode"] = mode_combo
+        s_mode.add_row(_SettingsRow(
+            "Cliente de torrent", mode_combo,
+            "App padrão funciona com qualquer cliente (Transmission, Deluge, etc.)",
+        ))
+
+        # qBittorrent (usado nos modos Automático e qBittorrent)
         s_qbt = _SectionCard("QBITTORRENT")
         for key, label, desc in [
             ("qbt_host", "Host", ""),
@@ -422,7 +443,7 @@ class SettingsScreen(QWidget):
         btn_rl.addStretch(1)
         btn_rl.addWidget(self._qbt_test_btn)
         s_qbt.add_row(btn_row)
-        self._sections["qbittorrent"] = [s_qbt]
+        self._sections["qbittorrent"] = [s_mode, s_qbt]
 
         # Subtitles: OpenSubtitles key only
         s_subs = _SectionCard("CHAVES DE API")
@@ -558,7 +579,10 @@ class SettingsScreen(QWidget):
             elif isinstance(control, QSpinBox):
                 await set_setting(key, str(control.value()))
             elif isinstance(control, QComboBox):
-                await set_setting(key, control.currentText())
+                if control.property("save_as_data"):
+                    await set_setting(key, control.currentData())
+                else:
+                    await set_setting(key, control.currentText())
             elif isinstance(control, QCheckBox):
                 await set_setting(key, str(control.isChecked()))
         if hasattr(self, "_rss_section"):

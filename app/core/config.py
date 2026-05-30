@@ -3,7 +3,7 @@ import sys
 import json
 
 # Versão do Aplicativo
-VERSION = "v1.0.9"
+VERSION = "v1.0.10"
 GITHUB_REPO = "kahd0/animedownloader"
 
 # APIs
@@ -108,6 +108,17 @@ def get_qbittorrent_config() -> dict:
         "username": get_setting("qbt_user", ""),
         "password": get_setting("qbt_pass", ""),
     }
+
+
+def get_torrent_mode() -> str:
+    """Como os magnets são enviados para download.
+
+    "auto"        — tenta qBittorrent; se indisponível, abre no app de torrent padrão do SO.
+    "qbittorrent" — usa apenas o qBittorrent (avisa se estiver fora).
+    "external"    — sempre abre no app de torrent padrão do SO (qualquer cliente).
+    """
+    mode = get_setting("torrent_mode", "auto")
+    return mode if mode in ("auto", "qbittorrent", "external") else "auto"
 
 
 def get_gemini_api_key() -> str:

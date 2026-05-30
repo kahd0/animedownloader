@@ -19,7 +19,6 @@ class SubtitlesScreen(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-
         topbar = QWidget()
         topbar.setFixedHeight(56)
         tbl = QHBoxLayout(topbar)

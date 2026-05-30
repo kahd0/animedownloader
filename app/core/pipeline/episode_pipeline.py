@@ -14,10 +14,11 @@ from app.core.events.bus import (
     MediaOrganized,
     EpisodeReady,
     PipelineFailed,
+    Notify,
 )
 from app.core.jobs.queue import job_queue
 from app.core import database as db
-from app.core.config import get_setting, get_source_dir, get_final_dir
+from app.core.config import get_setting, get_source_dir, get_final_dir, get_torrent_mode
 
 
 class EpisodePipeline:
@@ -45,9 +46,22 @@ class EpisodePipeline:
         job_queue.register("organization", self._job_organization)
 
     async def _on_episode_detected(self, event: EpisodeDetected) -> None:
-        """Handle a newly detected episode: add to qBittorrent or fallback to xdg-open."""
+        """Handle a newly detected episode according to the configured torrent mode.
+
+        - "auto":        try qBittorrent, fall back to the system torrent app.
+        - "qbittorrent": qBittorrent only (notify if it's unavailable).
+        - "external":    always hand the magnet to the system torrent app.
+        """
+        mode = get_torrent_mode()
+        ep_label = f"EP{event.episode:02d}"
         try:
-            if self._qbittorrent and await self._qbittorrent.is_available():
+            use_qbt = (
+                mode in ("auto", "qbittorrent")
+                and self._qbittorrent is not None
+                and await self._qbittorrent.is_available()
+            )
+
+            if use_qbt:
                 torrent_hash = await self._qbittorrent.add_magnet(event.magnet)
                 await db.save_release(
                     anime_id=event.anime_id,
@@ -65,25 +79,51 @@ class EpisodePipeline:
                     episode=event.episode,
                     torrent_hash=torrent_hash,
                 ))
-            else:
-                _open_magnet(event.magnet)
-                await db.save_release(
-                    anime_id=event.anime_id,
-                    episode=event.episode,
-                    title=event.title_pattern,
-                    magnet=event.magnet,
-                    torrent_hash=None,
-                    resolution=event.resolution,
-                    source=event.source,
-                )
-                # Register for filesystem detection: FilesystemWatcher will emit
-                # FileDetected when the video file lands on disk, triggering the pipeline.
+                return
+
+            # Não usou qBittorrent — persiste a release sem hash de torrent.
+            await db.save_release(
+                anime_id=event.anime_id,
+                episode=event.episode,
+                title=event.title_pattern,
+                magnet=event.magnet,
+                torrent_hash=None,
+                resolution=event.resolution,
+                source=event.source,
+            )
+
+            if mode == "qbittorrent":
+                # Usuário exige qBittorrent, mas ele está fora: avisa e não cai pro externo.
+                # O episódio re-dispara na próxima verificação (gate por last_ready).
+                await bus.publish(Notify(
+                    "error",
+                    f"qBittorrent indisponível — {ep_label} não foi baixado. "
+                    f"Abra o qBittorrent e verifique novamente.",
+                ))
+                return
+
+            # Modos "external" e "auto" (com qBittorrent fora): app de torrent padrão do SO.
+            from app.core.downloader.system import trigger_magnet
+            opened = await asyncio.to_thread(trigger_magnet, event.magnet)
+            if opened:
+                # Registra para o FilesystemWatcher continuar o pipeline (legenda/organização)
+                # quando o vídeo terminar de baixar na pasta de Downloads.
                 key = f"{event.anime_id}:{event.episode}"
                 self._fallback_pending[key] = {
                     "anime_id": event.anime_id,
                     "episode": event.episode,
                     "title_pattern": event.title_pattern,
                 }
+                await bus.publish(Notify(
+                    "info",
+                    f"{ep_label} enviado ao app de torrent — {event.title_pattern}",
+                ))
+            else:
+                await bus.publish(Notify(
+                    "error",
+                    f"Nenhum cliente de torrent encontrado para {ep_label}. "
+                    f"Abra ou instale um app de torrent.",
+                ))
         except Exception as e:
             await bus.publish(PipelineFailed(
                 anime_id=event.anime_id,
@@ -304,22 +344,6 @@ def _detect_language(path: str) -> str:
     except Exception:
         pass
     return "en"
-
-
-def _open_magnet(magnet: str) -> None:
-    import platform
-    import subprocess
-    import webbrowser
-    system = platform.system().lower()
-    try:
-        if system == "linux":
-            subprocess.Popen(["xdg-open", magnet])
-        elif system == "darwin":
-            subprocess.Popen(["open", magnet])
-        else:
-            webbrowser.open(magnet)
-    except Exception as e:
-        print(f"[Pipeline] open magnet erro: {e}")
 
 
 # Global singleton

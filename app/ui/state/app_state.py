@@ -40,6 +40,7 @@ class AppState:
             MediaOrganized,
             EpisodeReady,
             PipelineFailed,
+            Notify,
         )
 
         bus.subscribe(EpisodeDetected, self._on_episode_detected)
@@ -50,6 +51,7 @@ class AppState:
         bus.subscribe(MediaOrganized, self._on_media_organized)
         bus.subscribe(EpisodeReady, self._on_episode_ready)
         bus.subscribe(PipelineFailed, self._on_pipeline_failed)
+        bus.subscribe(Notify, self._on_notify)
 
     async def _on_episode_detected(self, event) -> None:
         self._log(f"Novo episódio detectado: {event.title_pattern} EP{event.episode:02d}", "cyan", "rss")
@@ -77,6 +79,10 @@ class AppState:
 
     async def _on_pipeline_failed(self, event) -> None:
         self._log(f"[ERRO] {event.step} — EP{event.episode:02d}: {event.error}", "red", "pipeline")
+
+    async def _on_notify(self, event) -> None:
+        color = {"error": "red", "warning": "yellow", "success": "green"}.get(event.level, "cyan")
+        self._log(event.message, color, "torrent")
 
     def _log(self, message: str, color: str = "white", source: str = "pipeline") -> None:
         level = self._LEVEL_MAP.get(color, "INFO")

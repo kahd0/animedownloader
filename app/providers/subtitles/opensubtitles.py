@@ -24,16 +24,20 @@ class OpenSubtitlesProvider(SubtitleProvider):
     async def search(self, title: str, episode: int) -> list[SubtitleResult]:
         if not self._api_key:
             return []
+        # A API do OpenSubtitles exige os query params em ordem alfabética e em
+        # minúsculas; caso contrário responde 301 para a URL canônica. Ordenar evita
+        # o redirect, e follow_redirects cobre qualquer normalização extra do servidor.
+        params = {
+            "query": title.lower(),
+            "episode_number": episode,
+            "languages": "pt-br",
+            "type": "episode",
+        }
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(follow_redirects=True) as client:
                 resp = await client.get(
                     f"{_API}/subtitles",
-                    params={
-                        "query": title,
-                        "episode_number": episode,
-                        "languages": "pt-BR",
-                        "type": "episode",
-                    },
+                    params=sorted(params.items()),
                     headers={
                         "Api-Key": self._api_key,
                         "Content-Type": "application/json",
@@ -62,8 +66,8 @@ class OpenSubtitlesProvider(SubtitleProvider):
                 continue
 
             file_info = files[0]
-            lang_code = attrs.get("language", "")
-            language = "pt-br" if lang_code in ("pt-BR", "pt") else ("en" if lang_code == "en" else lang_code)
+            lang_code = (attrs.get("language", "") or "").lower()
+            language = "pt-br" if lang_code in ("pt-br", "pt") else ("en" if lang_code == "en" else lang_code)
             fmt = (attrs.get("format") or "srt").lower()
 
             sub = SubtitleResult(
@@ -87,7 +91,7 @@ class OpenSubtitlesProvider(SubtitleProvider):
         if not file_id or not api_key:
             raise ValueError("OpenSubtitles result missing file_id or api_key")
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             resp = await client.post(
                 f"{_API}/download",
                 json={"file_id": file_id},
